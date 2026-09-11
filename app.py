@@ -33,6 +33,22 @@ col1, col2 = st.columns(2)
 with col1:
     ticker_input = st.text_input("Ticker", value="SOXL").upper().strip()
 
+# Asset Class Profile Definition
+leveraged_assets = ['SOXL', 'TECL', 'TQQQ', 'UPRO', 'FAS']
+is_leveraged = ticker_input in leveraged_assets
+
+# Adaptive Thresholds Based on Asset Class
+if is_leveraged:
+    min_macd_hist = 0.05
+    min_rsi_execution = 55.0
+    default_buffer = 0.10
+    profile_label = "⚡ **Asset Profile:** 3x Leveraged ETF (Stricter Filters Active)"
+else:
+    min_macd_hist = 0.00
+    min_rsi_execution = 50.0
+    default_buffer = 0.05
+    profile_label = "📊 **Asset Profile:** Standard Equity / Single Stock Swing Profile"
+
 # Precise Indicator Engine using Wilder's Smoothing (TradingView Standard)
 def compute_tradingview_style_indicators(df, window=14):
     close = df['Close']
@@ -102,18 +118,15 @@ current_price = market_data["price"] if market_data else 115.76
 with col2:
     price_input = st.number_input("Current Price ($)", value=round(current_price, 2), step=0.01)
 
-# Default risk rule: 10% for leveraged 3x ETFs, 5% for standard stocks
-leveraged_assets = ['SOXL', 'TECL', 'TQQQ', 'UPRO', 'FAS']
-default_buffer = 0.10 if ticker_input in leveraged_assets else 0.05
 default_stop = round(price_input * (1 - default_buffer), 2)
-
 stop_level = st.number_input("Stop Level ($)", value=default_stop, step=0.01)
 
 rsi_1h_val = market_data["rsi_1h"] if market_data else 42.5
+rsi_1d_val = market_data["rsi_1d"] if market_data else 45.0
 hist_4h_val = market_data["hist_4h"] if market_data else -0.29
 ema_1d_val = market_data["ema_1d"] if market_data else price_input
 
-# Decision Logic & Dynamic Threshold Rule Building
+# Decision Logic & Dynamic Threshold Rule Building (Asset-Aware)
 decision = "WAIT"
 border_color = "#ffe600"
 is_alert = False
@@ -126,26 +139,20 @@ elif price_input < stop_level:
     summary_markdown = f"""
 **CRITICAL EXIT TRIGGER**
 * **Trigger Event:** Current price (${price_input}) breached your stop loss floor (**${stop_level}**).
-* **Action:** Leveraged volatility decay overrides oversold indicators. Execute exit immediately.
+* **Action:** { "Leveraged volatility decay overrides oversold indicators. Execute exit immediately." if is_leveraged else "Support level broken. Protect capital and exit position." }
     """
     border_color = "#ff2d55"
-elif market_data and price_input > ema_1d_val and hist_4h_val > 0 and ticker_input not in leveraged_assets:
-    decision = "RE-ENTER"
-    summary_markdown = f"""
-**RE-ENTER SIGNAL CONFIRMED**
-* **Condition Met:** Price (${round(price_input, 2)}) is trading above the 1-Day 20 EMA (${round(ema_1d_val, 2)}) with positive 4-Hr momentum.
-    """
-    border_color = "#30d158"
 else:
     decision = "WAIT"
     needed_price = round(ema_1d_val, 2)
     summary_markdown = f"""
-**STATUS: WAIT / HOLD** (Macro constraints active)
-
+{profile_label}<br><br>
+**STATUS: WAIT / HOLD** (Adaptive thresholds active)<br><br>
 **Exact Thresholds Required to Change Signal:**
-* **To Shift Bullish / Re-enter:** 1-Day price must close above **${needed_price}** (20 EMA) **AND** 4-Hr MACD Histogram must cross above **0.00** (currently `{round(hist_4h_val, 2)}`).
-* **Execution Watch:** Monitor 1-Hr RSI (currently `{round(rsi_1h_val, 1)}`). Look for a drop below **40.0** for deep-value entries or a break above **50.0** for early momentum confirmation.
-* **Capital Protection:** Active stop level floor set at **${stop_level}**.
+* **To Shift Bullish / Re-enter:** 1-Day price must close above **${needed_price}** (20 EMA) **AND** 4-Hr MACD Histogram must exceed **{min_macd_hist}** (currently `{round(hist_4h_val, 2)}`).
+* **Macro Confirmation:** Monitor 1-Day RSI (currently `{round(rsi_1d_val, 1)}`). Look for it to push back above **50.0** to validate daily momentum.
+* **Execution Watch:** Monitor 1-Hr RSI (currently `{round(rsi_1h_val, 1)}`). Look for a break above **{min_rsi_execution}** to confirm momentum conviction (stricter filter for high-beta volatility).
+* **Capital Protection:** Active stop level floor set at **${stop_level}** ({int(default_buffer * 100)}% risk buffer).
     """
     border_color = "#ffe600"
 
@@ -174,20 +181,20 @@ if market_data:
     d1_trend = "Bullish" if d1_bullish else "Bearish"
     d1_color = "#30d158" if d1_bullish else "#ff2d55"
     
-    # 4-Hr Trend
-    h4_bullish = hist_4h_val > 0
-    h4_trend = "Bullish" if h4_bullish else "Bearish"
-    h4_color = "#30d158" if h4_bullish else "#ff2d55"
+    # 4-Hr Trend (Adaptive Threshold Check)
+    h4_bullish = hist_4h_val > min_macd_hist
+    h4_trend = "Bullish Conviction" if h4_bullish else ("Transitioning" if hist_4h_val > 0 else "Bearish")
+    h4_color = "#30d158" if h4_bullish else ("#ffe600" if hist_4h_val > 0 else "#ff2d55")
     
-    # 1-Hr Trend (Adjusted thresholds: <40 oversold, >50 bullish momentum)
+    # 1-Hr Trend (Adaptive Threshold Check)
     if rsi_1h_val < 40:
         h1_trend = "Oversold"
         h1_color = "#ffe600"
-    elif rsi_1h_val > 50:
+    elif rsi_1h_val >= min_rsi_execution:
         h1_trend = "Bullish Momentum"
         h1_color = "#30d158"
     else:
-        h1_trend = "Neutral"
+        h1_trend = "Neutral / Waiting"
         h1_color = "#a0a0b0"
 
     with col_a:
@@ -195,7 +202,7 @@ if market_data:
             <div class="metric-container">
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-DAY (MACRO)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{d1_color}; margin-top:6px;">{d1_trend}</div>
-                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(market_data['rsi_1d'], 1)}</div>
+                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1d_val, 1)}</div>
                 <div style="font-size:0.7rem; color:#8e8e93; margin-top:2px;">EMA20: ${round(ema_1d_val, 1)}</div>
             </div>
         """, unsafe_allow_html=True)
