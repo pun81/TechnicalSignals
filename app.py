@@ -24,13 +24,15 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h2>Decision Engine (Direct Feed Alignment)</h2>", unsafe_allow_html=True)
+st.markdown("<h2>Decision Engine (Calibrated Feeds)</h2>", unsafe_allow_html=True)
 
-# Sidebar for optional calibration
+# Sidebar for fine-tuning calibration sliders
 with st.sidebar:
-    st.markdown("### Calibration")
-    rsi_offset = st.slider("1-Hr RSI Offset Correction", -10.0, 10.0, 0.0, 0.5, 
-                           help="Adjusts calculated RSI if exchange candle feeds show minor discrepancies.")
+    st.markdown("### Feed Calibration")
+    rsi_offset = st.slider("1-Hr RSI Offset", -10.0, 10.0, 0.0, 0.5, 
+                           help="Fine-tunes 1H RSI to match TradingView exactly.")
+    macd_offset = st.slider("4-Hr MACD Hist Offset", -1.0, 1.0, 0.0, 0.05, 
+                            help="Fine-tunes 4H MACD histogram value.")
 
 # User Inputs
 col1, col2 = st.columns(2)
@@ -64,7 +66,7 @@ def compute_tradingview_style_indicators(df, window=14):
     
     return rsi.iloc[-1], ema20.iloc[-1], macd.iloc[-1], histogram.iloc[-1]
 
-# Fetch data using native interval feeds to match exchange candles
+# Fetch data and compute indicators across timeframes
 @st.cache_data(ttl=60)
 def get_market_analysis(symbol):
     try:
@@ -76,15 +78,18 @@ def get_market_analysis(symbol):
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d)
         
         # 1-Hour Data (Execution)
-        df_1h = t.history(period="30d", interval="1h")
+        df_1h = t.history(period="60d", interval="1h")
         rsi_1h, _, _, _ = compute_tradingview_style_indicators(df_1h)
         
-        # 4-Hour Data (Momentum) - fetched natively to align with TradingView bars
-        df_4h = t.history(period="60d", interval="4h")
-        if df_4h.empty:
-            # Fallback to hourly if 4h is restricted by yfinance period limits
-            df_4h = t.history(period="60d", interval="1h")
-            
+        # Properly resample 1-hour candles into 4-hour blocks for true momentum calculation
+        df_4h = df_1h.resample('4H').agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }).dropna()
+        
         _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h)
         
         return {
@@ -111,9 +116,9 @@ default_stop = round(price_input * (1 - default_buffer), 2)
 
 stop_level = st.number_input("Stop Level ($)", value=default_stop, step=0.01)
 
-# Apply user calibration offset to 1H RSI
+# Apply user calibration offsets
 calibrated_rsi_1h = (market_data["rsi_1h"] + rsi_offset) if market_data else 42.46
-hist_4h_val = market_data["hist_4h"] if market_data else -0.29
+calibrated_hist_4h = (market_data["hist_4h"] + macd_offset) if market_data else -0.29
 
 # Decision Logic Evaluation
 decision = "WAIT"
@@ -132,7 +137,7 @@ elif market_data and market_data["price"] > market_data["ema_1d"] and ticker_inp
     border_color = "#30d158"
 else:
     decision = "WAIT"
-    summary_text = f"Macro trend is constrained. 4-Hr MACD histogram is negative ({round(hist_4h_val, 2)}). Monitor <b>1-Hr RSI ({round(calibrated_rsi_1h, 1)})</b> for recovery before shifting stance. Protect capital against stop level (${stop_level})."
+    summary_text = f"Macro trend is constrained. 4-Hr MACD histogram is negative ({round(calibrated_hist_4h, 2)}). Monitor <b>1-Hr RSI ({round(calibrated_rsi_1h, 1)})</b> for recovery before shifting stance. Protect capital against stop level (${stop_level})."
     border_color = "#ffe600"
 
 # Render Alert Banner if Triggered
@@ -158,8 +163,8 @@ if market_data:
     d1_trend = "Bullish" if market_data['price'] > market_data['ema_1d'] else "Bearish"
     d1_color = "#30d158" if market_data['price'] > market_data['ema_1d'] else "#ff2d55"
     
-    h4_trend = "Bullish (MACD > 0)" if hist_4h_val > 0 else "Bearish (MACD < 0)"
-    h4_color = "#30d158" if hist_4h_val > 0 else "#ff2d55"
+    h4_trend = "Bullish (MACD > 0)" if calibrated_hist_4h > 0 else "Bearish (MACD < 0)"
+    h4_color = "#30d158" if calibrated_hist_4h > 0 else "#ff2d55"
     
     h1_trend = "Oversold" if calibrated_rsi_1h < 40 else ("Overbought" if calibrated_rsi_1h > 60 else "Neutral")
     h1_color = "#ffe600" if calibrated_rsi_1h < 40 else "#00d2ff"
@@ -178,7 +183,7 @@ if market_data:
             <div class="metric-container">
                 <div style="font-size:0.75rem; color:#a0a0b0;">4-HR (MOMENTUM)</div>
                 <div style="font-size:0.9rem; font-weight:bold; color:{h4_color}; margin-top:5px;">{h4_trend}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">Hist: {round(hist_4h_val, 2)}</div>
+                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">Hist: {round(calibrated_hist_4h, 2)}</div>
             </div>
         """, unsafe_allow_html=True)
         
