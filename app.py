@@ -228,13 +228,15 @@ else:
 
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d_inds)
         sma_50 = compute_50_sma(df_1d_inds)
+        adx_1d = compute_adx(df_1d_inds)
+        
         rsi_exec, _, _, _ = compute_tradingview_style_indicators(df_exec_inds)
         _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h_inds)
         adx_4h = compute_adx(df_4h_inds)
         
         market_data = {
             "price": live_price_val, "rsi_1d": rsi_1d, "ema_1d": ema_1d, "sma_50": sma_50,
-            "macd_4h": macd_4h, "hist_4h": hist_4h, "adx_4h": adx_4h, "rsi_1h": rsi_exec
+            "adx_1d": adx_1d, "macd_4h": macd_4h, "hist_4h": hist_4h, "adx_4h": adx_4h, "rsi_1h": rsi_exec
         }
 
 current_price = market_data["price"] if market_data else 115.76
@@ -246,6 +248,7 @@ stop_level = st.number_input("Stop Level (Structural Support)", value=default_st
 
 rsi_1h_val = market_data["rsi_1h"] if market_data else 42.5
 rsi_1d_val = market_data["rsi_1d"] if market_data else 45.0
+adx_1d_val = market_data["adx_1d"] if market_data else 22.0
 hist_4h_val = market_data["hist_4h"] if market_data else -0.29
 ema_1d_val = market_data["ema_1d"] if market_data else price_input
 sma_50_val = market_data["sma_50"] if market_data else price_input
@@ -327,8 +330,8 @@ if market_data:
             <div class="metric-container">
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-DAY (MACRO SWING)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{d1_color}; margin-top:6px;">{d1_trend}</div>
-                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1d_val, 1)} | 20 EMA: ${round(ema_1d_val, 1)}</div>
-                <div style="font-size:0.75rem; color:#8e8e93; margin-top:2px;">50 SMA Baseline: ${round(sma_50_val, 1)}</div>
+                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1d_val, 1)} | ADX: {round(adx_1d_val, 1)}</div>
+                <div style="font-size:0.75rem; color:#8e8e93; margin-top:2px;">20 EMA: ${round(ema_1d_val, 1)} | 50 SMA: ${round(sma_50_val, 1)}</div>
                 <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Target: Price > 20 EMA & RSI >= 50</div>
             </div>
         """, unsafe_allow_html=True)
