@@ -34,7 +34,7 @@ with col1:
     ticker_input = st.text_input("Ticker", value="SOXL").upper().strip()
 
 with col2:
-    include_after_hours = st.checkbox("Include After-Hours (ETH)", value=True, help="Check to include pre-market and after-hours ticks in indicator calculations.")
+    include_after_hours = st.checkbox("Include After-Hours (ETH)", value=True, help="Check to include pre-market and after-hours ticks on intraday intervals.")
 
 # Asset Class Profile Definition
 leveraged_assets = ['SOXL', 'TECL', 'TQQQ', 'UPRO', 'FAS']
@@ -89,23 +89,15 @@ def find_structural_support(df_4h, is_leveraged):
     else:
         return round(raw_support, 2)
 
-# Fetch real-time live price endpoint with error capture
-@st.cache_data(ttl=30)
-def fetch_live_price(symbol, key):
-    url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={key}"
-    try:
-        response = requests.get(url).json()
-        if "price" in response:
-            return float(response["price"]), None
-        return None, response.get("message", "Unknown price API error")
-    except Exception as e:
-        return None, str(e)
-
-# Fetch historical time series with detailed error feedback
+# Fetch historical time series safely (supports ETH toggle for intraday)
 @st.cache_data(ttl=60)
 def fetch_twelve_data(symbol, interval, key, include_eth):
-    prepost_param = "true" if include_eth else "false"
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&prepost={prepost_param}&apikey={key}"
+    if interval in ["1day", "4h"]:
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&apikey={key}"
+    else:
+        prepost_param = "true" if include_eth else "false"
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&prepost={prepost_param}&apikey={key}"
+        
     try:
         response = requests.get(url).json()
         if "values" in response and len(response["values"]) > 0:
@@ -116,10 +108,7 @@ def fetch_twelve_data(symbol, interval, key, include_eth):
             df = df.sort_index()
             df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
             
-            # Drop the live/unclosed candle to ensure complete-bar alignment with TradingView history
-            if len(df) > 1:
-                df = df.iloc[:-1]
-                
+            # Keep unclosed live candle if checking current price, but for indicators we drop it later
             return df, None
         err_msg = response.get("message", f"No values returned for {interval}")
         return None, err_msg
@@ -135,27 +124,29 @@ api_error_log = []
 if not api_key:
     api_error_log.append("`TWELVE_DATA_API_KEY` is missing from your Streamlit Secrets.")
 else:
-    live_price_val, err_price = fetch_live_price(ticker_input, api_key)
-    if err_price: api_error_log.append(f"Price API Error: {err_price}")
-
+    df_1h_raw, err_1h_raw = fetch_twelve_data(ticker_input, "1h", api_key, include_after_hours)
     df_1d, err_1d = fetch_twelve_data(ticker_input, "1day", api_key, include_after_hours)
-    if err_1d: api_error_log.append(f"1-Day Data Error: {err_1d}")
-
     df_4h_data, err_4h = fetch_twelve_data(ticker_input, "4h", api_key, include_after_hours)
-    if err_4h: api_error_log.append(f"4-Hour Data Error: {err_4h}")
 
-    df_1h, err_1h = fetch_twelve_data(ticker_input, "1h", api_key, include_after_hours)
-    if err_1h: api_error_log.append(f"1-Hour Data Error: {err_1h}")
+    if err_1d: api_error_log.append(f"1-Day Data Error: {err_1d}")
+    if err_4h: api_error_log.append(f"4-Hour Data Error: {err_4h}")
+    if err_1h_raw: api_error_log.append(f"1-Hour Data Error: {err_1h_raw}")
     
-    if df_1d is not None and df_4h_data is not None and df_1h is not None and len(df_1d) > 0:
-        price = live_price_val if live_price_val else float(df_1d['Close'].iloc[-1])
+    if df_1d is not None and df_4h_data is not None and df_1h_raw is not None and len(df_1d) > 0:
+        # Extract live price dynamically from the latest 1H candle (respecting after-hours toggle)
+        live_price_val = float(df_1h_raw['Close'].iloc[-1])
         
-        rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d)
-        rsi_1h, _, _, _ = compute_tradingview_style_indicators(df_1h)
-        _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h_data)
+        # Prepare indicator dataframes by dropping the unclosed live candle for alignment
+        df_1h_indicators = df_1h_raw.iloc[:-1] if len(df_1h_raw) > 1 else df_1h_raw
+        df_1d_indicators = df_1d.iloc[:-1] if len(df_1d) > 1 else df_1d
+        df_4h_indicators = df_4h_data.iloc[:-1] if len(df_4h_data) > 1 else df_4h_data
+
+        rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d_indicators)
+        rsi_1h, _, _, _ = compute_tradingview_style_indicators(df_1h_indicators)
+        _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h_indicators)
         
         market_data = {
-            "price": price,
+            "price": live_price_val,
             "rsi_1d": rsi_1d,
             "ema_1d": ema_1d,
             "macd_4h": macd_4h,
@@ -256,7 +247,7 @@ if market_data:
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-DAY (MACRO)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{d1_color}; margin-top:6px;">{d1_trend}</div>
                 <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1d_val, 1)}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:2px;">EMA20: ${round(ema_1d_val, 1)}</div>
+                <div style="font-size:0.7rem; color:#8e8e93; margin-top:2px;">EMA25: ${round(ema_1d_val, 1)}</div>
             </div>
         """, unsafe_allow_html=True)
         
