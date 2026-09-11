@@ -34,7 +34,7 @@ with col1:
     ticker_input = st.text_input("Ticker", value="SOXL").upper().strip()
 
 with col2:
-    include_after_hours = st.checkbox("Include After-Hours (ETH)", value=False, help="Check to include pre-market and after-hours ticks in indicator calculations.")
+    include_after_hours = st.checkbox("Include After-Hours (ETH)", value=True, help="Check to include pre-market and after-hours ticks in indicator calculations.")
 
 # Asset Class Profile Definition
 leveraged_assets = ['SOXL', 'TECL', 'TQQQ', 'UPRO', 'FAS']
@@ -52,6 +52,9 @@ else:
 
 # Precise Indicator Engine using Wilder's Smoothing (TradingView Standard)
 def compute_tradingview_style_indicators(df, window=14):
+    if df is None or len(df) < window:
+        return 50.0, 0.0, 0.0, 0.0
+        
     close = df['Close']
     delta = close.diff()
     
@@ -98,24 +101,20 @@ def fetch_live_price(symbol, key):
     except Exception:
         return None
 
-# Fetch historical time series with dynamic RTH/ETH filtering
+# Fetch historical time series safely
 @st.cache_data(ttl=60)
 def fetch_twelve_data(symbol, interval, key, include_eth):
     prepost_param = "true" if include_eth else "false"
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&prepost={prepost_param}&apikey={key}"
     try:
         response = requests.get(url).json()
-        if "values" in response:
+        if "values" in response and len(response["values"]) > 0:
             df = pd.DataFrame(response["values"])
             df['datetime'] = pd.to_datetime(df['datetime'])
             df.set_index('datetime', inplace=True)
             df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
             df = df.sort_index()
             df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
-            
-            # Filter strictly to RTH if after-hours is toggled off
-            if not include_eth:
-                df = df.between_time('09:30:00', '16:00:00')
             
             # Drop the live/unclosed candle to ensure complete-bar alignment with TradingView history
             if len(df) > 1:
@@ -137,7 +136,7 @@ if api_key:
     df_4h_data = fetch_twelve_data(ticker_input, "4h", api_key, include_after_hours)
     df_1h = fetch_twelve_data(ticker_input, "1h", api_key, include_after_hours)
     
-    if df_1d is not None and df_4h_data is not None and df_1h is not None:
+    if df_1d is not None and df_4h_data is not None and df_1h is not None and len(df_1d) > 0:
         price = live_price_val if live_price_val else float(df_1d['Close'].iloc[-1])
         
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d)
