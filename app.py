@@ -7,7 +7,7 @@ import numpy as np
 st.set_page_config(
     page_title="Trade Decision Engine",
     page_icon="📈",
-    layout="wide" # Switched to wide to accommodate the extra data cleanly
+    layout="wide" 
 )
 
 # Custom Dark Mode & High-Contrast CSS Styling
@@ -39,7 +39,7 @@ is_leveraged = ticker_input in leveraged_assets
 if is_leveraged:
     min_macd_hist = 0.05
     min_rsi_execution = 55.0
-    min_adx = 20.0 # Chop filter for leveraged decay
+    min_adx = 20.0 
     profile_label = "⚡ **Asset Profile:** 3x Leveraged ETF (Stricter Filters Active)"
 else:
     min_macd_hist = 0.00
@@ -47,9 +47,32 @@ else:
     min_adx = 15.0 
     profile_label = "📊 **Asset Profile:** Standard Equity / Single Stock Swing Profile"
 
-# Indicator Calculations
+# --- TRADINGVIEW EXACT HELPER FUNCTIONS ---
+def calc_rma(series, length):
+    """TradingView exact Wilder's Smoothing (RMA)"""
+    s = pd.Series(series).copy().dropna()
+    if len(s) < length:
+        return pd.Series(index=series.index, data=np.nan)
+    sma = s.iloc[:length].mean()
+    s.iloc[:length-1] = np.nan
+    s.iloc[length-1] = sma
+    rma = s.ewm(alpha=1/length, adjust=False).mean()
+    return rma.reindex(series.index)
+
+def calc_ema(series, length):
+    """TradingView exact Exponential Moving Average"""
+    s = pd.Series(series).copy().dropna()
+    if len(s) < length:
+        return pd.Series(index=series.index, data=np.nan)
+    sma = s.iloc[:length].mean()
+    s.iloc[:length-1] = np.nan
+    s.iloc[length-1] = sma
+    ema = s.ewm(span=length, adjust=False).mean()
+    return ema.reindex(series.index)
+
+# --- INDICATOR CALCULATIONS ---
 def compute_tradingview_style_indicators(df, window=14):
-    if df is None or len(df) < window:
+    if df is None or len(df) < 50:
         return 50.0, 0.0, 0.0, 0.0
         
     close = df['Close']
@@ -58,21 +81,22 @@ def compute_tradingview_style_indicators(df, window=14):
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     
-    avg_gain = gain.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
+    avg_gain = calc_rma(gain, window)
+    avg_loss = calc_rma(loss, window)
     
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(100) # Fallback if loss is exactly 0
     
-    ema20 = close.ewm(span=20, adjust=False).mean()
+    ema20 = calc_ema(close, 20)
     
-    exp1 = close.ewm(span=12, adjust=False).mean()
-    exp2 = close.ewm(span=26, adjust=False).mean()
-    macd = exp1 - exp2
-    signal = macd.ewm(span=9, adjust=False).mean()
-    histogram = macd - signal
+    exp1 = calc_ema(close, 12)
+    exp2 = calc_ema(close, 26)
+    macd_line = exp1 - exp2
+    signal_line = calc_ema(macd_line, 9)
+    histogram = macd_line - signal_line
     
-    return rsi.iloc[-1], ema20.iloc[-1], macd.iloc[-1], histogram.iloc[-1]
+    return rsi.iloc[-1], ema20.iloc[-1], macd_line.iloc[-1], histogram.iloc[-1]
 
 def compute_adx(df, window=14):
     if df is None or len(df) < window * 2:
@@ -89,17 +113,25 @@ def compute_adx(df, window=14):
          np.maximum(abs(df['High'] - df['Close'].shift(1)), 
                     abs(df['Low'] - df['Close'].shift(1))))
     
-    tr_smooth = pd.Series(tr).ewm(alpha=1/window, adjust=False).mean()
-    plus_dm_smooth = pd.Series(plus_dm).ewm(alpha=1/window, adjust=False).mean()
-    minus_dm_smooth = pd.Series(minus_dm).ewm(alpha=1/window, adjust=False).mean()
+    tr_rma = calc_rma(pd.Series(tr, index=df.index), window)
+    plus_dm_rma = calc_rma(pd.Series(plus_dm, index=df.index), window)
+    minus_dm_rma = calc_rma(pd.Series(minus_dm, index=df.index), window)
     
-    plus_di = 100 * (plus_dm_smooth / tr_smooth)
-    minus_di = 100 * (minus_dm_smooth / tr_smooth)
+    # Division by Zero Fixes
+    tr_rma = tr_rma.replace(0, np.nan)
     
-    dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
-    adx = dx.ewm(alpha=1/window, adjust=False).mean()
+    plus_di = 100 * (plus_dm_rma / tr_rma)
+    minus_di = 100 * (minus_dm_rma / tr_rma)
     
-    return adx.iloc[-1]
+    di_sum = plus_di + minus_di
+    di_sum = di_sum.replace(0, np.nan) # Protect against NaN propagation
+    
+    dx = 100 * (abs(plus_di - minus_di) / di_sum)
+    dx = dx.fillna(0) # Fill isolated NaN values before final smoothing
+    
+    adx = calc_rma(dx, window)
+    
+    return adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 0.0
 
 def compute_50_sma(df):
     if df is None or len(df) < 50:
@@ -115,7 +147,8 @@ def find_structural_support(df_4h, is_leveraged):
 
 @st.cache_data(ttl=60)
 def fetch_twelve_data(symbol, interval, key):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&apikey={key}"
+    # Outputsize increased to 800 to ensure deep data warmup for EMAs and RMAs
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=800&apikey={key}"
     try:
         response = requests.get(url).json()
         if "values" in response and len(response["values"]) > 0:
