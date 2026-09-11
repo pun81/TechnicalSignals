@@ -118,7 +118,7 @@ else:
 
     if err_1d: api_error_log.append(f"1-Day Data Error: {err_1d}")
     if err_4h: api_error_log.append(f"4-Hour Data Error: {err_4h}")
-        if err_exec: api_error_log.append(f"Execution Stream Data Error: {err_exec}")
+    if err_exec: api_error_log.append(f"Execution Stream Data Error: {err_exec}")
     
     if df_1d is not None and df_4h_data is not None and df_execution_raw is not None and len(df_1d) > 0:
         live_price_val = float(df_execution_raw['Close'].iloc[-1])
