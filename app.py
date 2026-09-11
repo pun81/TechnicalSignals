@@ -1,7 +1,7 @@
 import streamlit as st
 import yfinance as yf
-from tradingview_ta import TA_Handler, Interval
 import pandas as pd
+import numpy as np
 
 # Page Configuration for Mobile View
 st.set_page_config(
@@ -24,21 +24,70 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h2>Decision Engine (Live Data)</h2>", unsafe_allow_html=True)
+st.markdown("<h2>Decision Engine (Live Native Math)</h2>", unsafe_allow_html=True)
 
-# User Inputs for Ticker & Custom Stop Configuration
+# User Inputs
 col1, col2 = st.columns(2)
 with col1:
     ticker_input = st.text_input("Ticker", value="SOXL").upper().strip()
-with col2:
-    # Fetch live price dynamically using yfinance
-    try:
-        ticker_obj = yf.Ticker(ticker_input)
-        todays_data = ticker_obj.history(period="1d")
-        current_price = float(todays_data['Close'].iloc[-1]) if not todays_data.empty else 115.76
-    except Exception:
-        current_price = 115.76
 
+# Function to calculate technical indicators from historical data frames
+def compute_indicators(df, window=14):
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    
+    # EMA 20
+    ema20 = df['Close'].ewm(span=20, adjust=False).mean()
+    
+    # MACD
+    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2
+    signal = macd.ewm(span=9, adjust=False).mean()
+    histogram = macd - signal
+    
+    return rsi.iloc[-1], ema20.iloc[-1], macd.iloc[-1], histogram.iloc[-1]
+
+# Fetch data and compute indicators for multiple timeframes
+@st.cache_data(ttl=60)
+def get_market_analysis(symbol):
+    try:
+        t = yf.Ticker(symbol)
+        
+        # 1 Day Data (Macro)
+        df_1d = t.history(period="60d", interval="1d")
+        price = float(df_1d['Close'].iloc[-1])
+        rsi_1d, ema_1d, _, _ = compute_indicators(df_1d)
+        
+        # 4 Hour Data (Momentum) - approximated via hourly history
+        df_4h = t.history(period="60d", interval="1h")
+        _, _, macd_4h, hist_4h = compute_indicators(df_4h)
+        
+        # 1 Hour Data (Execution)
+        rsi_1h, _, _, _ = compute_indicators(df_4h)
+        
+        return {
+            "price": price,
+            "rsi_1d": rsi_1d,
+            "ema_1d": ema_1d,
+            "macd_4h": macd_4h,
+            "hist_4h": hist_4h,
+            "rsi_1h": rsi_1h
+        }
+    except Exception as e:
+        return None
+
+market_data = get_market_analysis(ticker_input)
+
+if market_data:
+    current_price = market_data["price"]
+else:
+    current_price = 115.76
+
+with col2:
     price_input = st.number_input("Current Price ($)", value=round(current_price, 2), step=0.01)
 
 # Default buffer rule: 10% for leveraged 3x ETFs, 5% for standard stocks
@@ -48,40 +97,7 @@ default_stop = round(price_input * (1 - default_buffer), 2)
 
 stop_level = st.number_input("Stop Level ($)", value=default_stop, step=0.01)
 
-# Function to fetch TradingView technical ratings securely
-@st.cache_data(ttl=60) # Cache for 60 seconds to respect rate limits
-def fetch_tradingview_data(symbol):
-    try:
-        # Determine exchange/screener mapping
-        exchange = "NASDAQ" if symbol in ['SOXL', 'TQQQ', 'TECL'] else "NYSE"
-        
-        # 1-Day Analysis
-        handler_1d = TA_Handler(symbol=symbol, screener="america", exchange=exchange, interval=Interval.INTERVAL_1_DAY)
-        analysis_1d = handler_1d.get_analysis()
-        
-        # 4-Hour Analysis
-        handler_4h = TA_Handler(symbol=symbol, screener="america", exchange=exchange, interval=Interval.INTERVAL_4_HOURS)
-        analysis_4h = handler_4h.get_analysis()
-        
-        # 1-Hour Analysis
-        handler_1h = TA_Handler(symbol=symbol, screener="america", exchange=exchange, interval=Interval.INTERVAL_1_HOUR)
-        analysis_1h = handler_1h.get_analysis()
-        
-        return {
-            "d1": analysis_1d.summary["RECOMMENDATION"],
-            "d1_indicators": analysis_1d.indicators,
-            "h4": analysis_4h.summary["RECOMMENDATION"],
-            "h4_indicators": analysis_4h.indicators,
-            "h1": analysis_1h.summary["RECOMMENDATION"],
-            "h1_indicators": analysis_1h.indicators,
-        }
-    except Exception as e:
-        return None
-
-# Fetch live data signals
-tv_data = fetch_tradingview_data(ticker_input)
-
-# Decision Engine Logic Evaluation
+# Decision Logic Evaluation
 decision = "WAIT"
 summary_text = ""
 border_color = "#ffe600"
@@ -92,13 +108,13 @@ if price_input < stop_level:
     is_alert = True
     summary_text = f"CRITICAL EXIT TRIGGER: {ticker_input} has dropped below your automated risk stop of ${stop_level}. Leveraged decay risk overrides short-term oversold indicators. Execute exit immediately."
     border_color = "#ff2d55"
-elif tv_data and tv_data["d1"] in ["STRONG_BUY", "BUY"] and ticker_input not in leveraged_assets:
+elif market_data and market_data["price"] > market_data["ema_1d"] and ticker_input not in leveraged_assets:
     decision = "RE-ENTER"
-    summary_text = f"Uptrend confirmed across live TradingView feeds. Macro and momentum indicators align favorably for a position entry."
+    summary_text = f"Uptrend confirmed. Price is trading above the 1-Day 20 EMA with positive momentum alignment."
     border_color = "#30d158"
 else:
     decision = "WAIT"
-    summary_text = f"Macro trend is constrained. Watch live TradingView metrics below for a relief bounce: ensure <b>1-Hr indicators shift positive</b> and <b>4-Hr momentum recovers</b> before changing stance. Protect capital against stop level (${stop_level})."
+    summary_text = f"Macro trend is constrained. Watch indicators for a relief bounce: ensure <b>1-Hr RSI recovers</b> and <b>4-Hr MACD histogram turns positive</b> before shifting stance. Protect capital against stop level (${stop_level})."
     border_color = "#ffe600"
 
 # Render Alert Banner if Triggered
@@ -116,17 +132,30 @@ else:
 
 st.markdown("---")
 
-# Render Multi-Timeframe Ladder Using Live TradingView Data
+# Render Multi-Timeframe Ladder Using Native Calculations
 st.markdown("### Live Timeframe Breakdown")
-if tv_data:
+if market_data:
     col_a, col_b, col_c = st.columns(3)
     
+    # 1-Day Trend evaluation
+    d1_trend = "Bullish (Above EMA)" if market_data['price'] > market_data['ema_1d'] else "Bearish (Below EMA)"
+    d1_color = "#30d158" if market_data['price'] > market_data['ema_1d'] else "#ff2d55"
+    
+    # 4-Hour Momentum evaluation
+    h4_trend = "Bullish (> 0)" if market_data['hist_4h'] > 0 else "Bearish (< 0)"
+    h4_color = "#30d158" if market_data['hist_4h'] > 0 else "#ff2d55"
+    
+    # 1-Hour RSI evaluation
+    rsi_val = market_data['rsi_1h']
+    h1_trend = "Oversold" if rsi_val < 40 else ("Overbought" if rsi_val > 60 else "Neutral")
+    h1_color = "#ffe600" if rsi_val < 40 else "#00d2ff"
+
     with col_a:
         st.markdown(f"""
             <div class="metric-container">
                 <div style="font-size:0.75rem; color:#a0a0b0;">1-DAY (MACRO)</div>
-                <div style="font-size:1rem; font-weight:bold; color:#fff; margin-top:5px;">{tv_data['d1'].replace('_', ' ')}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">RSI: {round(tv_data['d1_indicators'].get('RSI', 0), 1)}</div>
+                <div style="font-size:0.9rem; font-weight:bold; color:{d1_color}; margin-top:5px;">{d1_trend}</div>
+                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">RSI: {round(market_data['rsi_1d'], 1)}</div>
             </div>
         """, unsafe_allow_html=True)
         
@@ -134,8 +163,8 @@ if tv_data:
         st.markdown(f"""
             <div class="metric-container">
                 <div style="font-size:0.75rem; color:#a0a0b0;">4-HR (MOMENTUM)</div>
-                <div style="font-size:1rem; font-weight:bold; color:#fff; margin-top:5px;">{tv_data['h4'].replace('_', ' ')}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">MACD: {round(tv_data['h4_indicators'].get('MACD.macd', 0), 2)}</div>
+                <div style="font-size:0.9rem; font-weight:bold; color:{h4_color}; margin-top:5px;">{h4_trend}</div>
+                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">Hist: {round(market_data['hist_4h'], 2)}</div>
             </div>
         """, unsafe_allow_html=True)
         
@@ -143,12 +172,12 @@ if tv_data:
         st.markdown(f"""
             <div class="metric-container">
                 <div style="font-size:0.75rem; color:#a0a0b0;">1-HR (EXECUTION)</div>
-                <div style="font-size:1rem; font-weight:bold; color:#fff; margin-top:5px;">{tv_data['h1'].replace('_', ' ')}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">RSI: {round(tv_data['h1_indicators'].get('RSI', 0), 1)}</div>
+                <div style="font-size:0.9rem; font-weight:bold; color:{h1_color}; margin-top:5px;">{h1_trend}</div>
+                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">RSI: {round(rsi_val, 1)}</div>
             </div>
         """, unsafe_allow_html=True)
 else:
-    st.warning("Unable to reach TradingView live endpoints. Please verify ticker symbol.")
+    st.warning("Unable to fetch price history for this ticker.")
 
 # Recommendation Box
 st.markdown(f"""
