@@ -28,13 +28,8 @@ st.markdown("<h2>Decision Engine</h2>", unsafe_allow_html=True)
 # Load API Key automatically from Streamlit Secrets
 api_key = st.secrets.get("TWELVE_DATA_API_KEY", "")
 
-# User Inputs
-col1, col2 = st.columns(2)
-with col1:
-    ticker_input = st.text_input("Ticker", value="SOXL").upper().strip()
-
-with col2:
-    include_after_hours = st.checkbox("Include After-Hours (ETH)", value=True, help="Check to include pre-market and after-hours ticks on intraday intervals.")
+# Ticker Input (Regular Market Hours Only)
+ticker_input = st.text_input("Ticker", value="SOXL").upper().strip()
 
 # Asset Class Profile Definition
 leveraged_assets = ['SOXL', 'TECL', 'TQQQ', 'UPRO', 'FAS']
@@ -89,25 +84,10 @@ def find_structural_support(df_4h, is_leveraged):
     else:
         return round(raw_support, 2)
 
-# Fetch historical time series safely with strict interval rules
+# Fetch historical time series cleanly for standard market hours
 @st.cache_data(ttl=60)
-def fetch_twelve_data(symbol, interval, key, include_eth):
-    # Twelve Data only permits prepost=true on intraday intervals <= 30min (1min, 5min, 15min, 30min).
-    if interval == "1h":
-        if include_eth:
-            interval = "30min"  # Switch to 30min to lawfully accept pre/post data
-            prepost_param = "true"
-        else:
-            prepost_param = "false"
-    else:
-        # Macro intervals (4h, 1day) do not support pre/post parameters on Twelve Data
-        prepost_param = "false"
-
-    if prepost_param == "true":
-        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&prepost=true&apikey={key}"
-    else:
-        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&apikey={key}"
-        
+def fetch_twelve_data(symbol, interval, key):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&apikey={key}"
     try:
         response = requests.get(url).json()
         if "values" in response and len(response["values"]) > 0:
@@ -117,7 +97,6 @@ def fetch_twelve_data(symbol, interval, key, include_eth):
             df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
             df = df.sort_index()
             df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
-            
             return df, None
         err_msg = response.get("message", f"No values returned for {interval}")
         return None, err_msg
@@ -133,19 +112,17 @@ api_error_log = []
 if not api_key:
     api_error_log.append("`TWELVE_DATA_API_KEY` is missing from your Streamlit Secrets.")
 else:
-    df_execution_raw, err_exec = fetch_twelve_data(ticker_input, "1h", api_key, include_after_hours)
-    df_1d, err_1d = fetch_twelve_data(ticker_input, "1day", api_key, include_after_hours)
-    df_4h_data, err_4h = fetch_twelve_data(ticker_input, "4h", api_key, include_after_hours)
+    df_execution_raw, err_exec = fetch_twelve_data(ticker_input, "1h", api_key)
+    df_1d, err_1d = fetch_twelve_data(ticker_input, "1day", api_key)
+    df_4h_data, err_4h = fetch_twelve_data(ticker_input, "4h", api_key)
 
     if err_1d: api_error_log.append(f"1-Day Data Error: {err_1d}")
     if err_4h: api_error_log.append(f"4-Hour Data Error: {err_4h}")
     if err_exec: api_error_log.append(f"Execution Stream Data Error: {err_exec}")
     
     if df_1d is not None and df_4h_data is not None and df_execution_raw is not None and len(df_1d) > 0:
-        # Extract live price dynamically from the latest tick
         live_price_val = float(df_execution_raw['Close'].iloc[-1])
         
-        # Prepare indicator dataframes by dropping the unclosed live candle for alignment
         df_exec_indicators = df_execution_raw.iloc[:-1] if len(df_execution_raw) > 1 else df_execution_raw
         df_1d_indicators = df_1d.iloc[:-1] if len(df_1d) > 1 else df_1d
         df_4h_indicators = df_4h_data.iloc[:-1] if len(df_4h_data) > 1 else df_4h_data
@@ -229,17 +206,14 @@ st.markdown("### Multi-Timeframe Technical Breakdown")
 if market_data:
     col_a, col_b, col_c = st.columns(3)
     
-    # 1-Day Trend
     d1_bullish = market_data['price'] > ema_1d_val
     d1_trend = "Bullish" if d1_bullish else "Bearish"
     d1_color = "#30d158" if d1_bullish else "#ff2d55"
     
-    # 4-Hr Trend
     h4_bullish = hist_4h_val > min_macd_hist
     h4_trend = "Bullish Conviction" if h4_bullish else ("Transitioning" if hist_4h_val > 0 else "Bearish")
     h4_color = "#30d158" if h4_bullish else ("#ffe600" if hist_4h_val > 0 else "#ff2d55")
     
-    # Execution Trend
     if rsi_1h_val < 40:
         h1_trend = "Oversold"
         h1_color = "#ffe600"
@@ -282,7 +256,6 @@ else:
     for err in api_error_log:
         st.code(err)
 
-# Recommendation Box with Clean Markdown Rendering
 st.markdown(f"""
     <div style="margin-top: 20px; font-size: 0.85rem; color: #aeaeb2; line-height: 1.6; padding: 15px; background: #16161c; border-radius: 12px; border-left: 4px solid {border_color};">
         {summary_markdown}
