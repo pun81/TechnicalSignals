@@ -24,7 +24,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h2>Decision Engine (Calibrated Feeds)</h2>", unsafe_allow_html=True)
+st.markdown("<h2>Decision Engine (Timezone Safe)</h2>", unsafe_allow_html=True)
 
 # Sidebar for fine-tuning calibration sliders
 with st.sidebar:
@@ -66,7 +66,7 @@ def compute_tradingview_style_indicators(df, window=14):
     
     return rsi.iloc[-1], ema20.iloc[-1], macd.iloc[-1], histogram.iloc[-1]
 
-# Fetch data and compute indicators across timeframes
+# Fetch data and compute indicators across timeframes safely
 @st.cache_data(ttl=60)
 def get_market_analysis(symbol):
     try:
@@ -74,14 +74,21 @@ def get_market_analysis(symbol):
         
         # 1-Day Data (Macro)
         df_1d = t.history(period="100d", interval="1d")
+        if df_1d.empty:
+            return None
         price = float(df_1d['Close'].iloc[-1])
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d)
         
         # 1-Hour Data (Execution)
-        df_1h = t.history(period="60d", interval="1h")
+        df_1h = t.history(period="30d", interval="1h")
+        if df_1h.empty:
+            return None
         rsi_1h, _, _, _ = compute_tradingview_style_indicators(df_1h)
         
-        # Properly resample 1-hour candles into 4-hour blocks for true momentum calculation
+        # Make timezone-naive before resampling to prevent pandas resampling errors
+        df_1h.index = df_1h.index.tz_localize(None)
+        
+        # Resample 1-hour candles into 4-hour blocks
         df_4h = df_1h.resample('4H').agg({
             'Open': 'first',
             'High': 'max',
