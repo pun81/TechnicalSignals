@@ -89,18 +89,24 @@ def find_structural_support(df_4h, is_leveraged):
     else:
         return round(raw_support, 2)
 
-# Fetch historical time series safely 
+# Fetch historical time series safely with strict interval rules
 @st.cache_data(ttl=60)
 def fetch_twelve_data(symbol, interval, key, include_eth):
-    # Twelve Data restricts prepost=true to intervals <= 30min. 
-    # If after-hours is checked on 1h, shift to 30min to support pre/post data legally.
-    if include_eth and interval == "1h":
-        interval = "30min"
-        
-    if interval in ["1day", "4h"] or not include_eth:
-        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&apikey={key}"
+    # Twelve Data only permits prepost=true on intraday intervals <= 30min (1min, 5min, 15min, 30min).
+    if interval == "1h":
+        if include_eth:
+            interval = "30min"  # Switch to 30min to lawfully accept pre/post data
+            prepost_param = "true"
+        else:
+            prepost_param = "false"
     else:
+        # Macro intervals (4h, 1day) do not support pre/post parameters on Twelve Data
+        prepost_param = "false"
+
+    if prepost_param == "true":
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&prepost=true&apikey={key}"
+    else:
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&apikey={key}"
         
     try:
         response = requests.get(url).json()
@@ -136,7 +142,7 @@ else:
     if err_exec: api_error_log.append(f"Execution Stream Data Error: {err_exec}")
     
     if df_1d is not None and df_4h_data is not None and df_execution_raw is not None and len(df_1d) > 0:
-        # Extract live price dynamically from the latest tick (respecting after-hours toggle via 30m/1h stream)
+        # Extract live price dynamically from the latest tick
         live_price_val = float(df_execution_raw['Close'].iloc[-1])
         
         # Prepare indicator dataframes by dropping the unclosed live candle for alignment
