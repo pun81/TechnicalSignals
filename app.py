@@ -247,7 +247,7 @@ if market_data:
     with col_c:
         st.markdown(f"""
             <div class="metric-container">
-                <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">EXECUTION STREAM</div>
+                <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-HR EXECUTION STREAM</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{h1_color}; margin-top:6px;">{h1_trend}</div>
                 <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1h_val, 1)}</div>
                 <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Target: RSI > {min_rsi_execution}</div>
