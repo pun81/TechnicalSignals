@@ -56,7 +56,6 @@ def compute_tradingview_style_indicators(df, window=14):
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     
-    # TradingView uses Wilder's smoothing (RMA), configured with min_periods for precision
     avg_gain = gain.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
     
@@ -124,7 +123,6 @@ else:
     if df_1d is not None and df_4h_data is not None and df_execution_raw is not None and len(df_1d) > 0:
         live_price_val = float(df_execution_raw['Close'].iloc[-1])
         
-        # Strictly drop the last active/unclosed candle to align with closed historical bar feeds on TradingView
         df_exec_indicators = df_execution_raw.iloc[:-1].copy() if len(df_execution_raw) > 1 else df_execution_raw.copy()
         df_1d_indicators = df_1d.iloc[:-1].copy() if len(df_1d) > 1 else df_1d.copy()
         df_4h_indicators = df_4h_data.iloc[:-1].copy() if len(df_4h_data) > 1 else df_4h_data.copy()
@@ -182,8 +180,6 @@ else:
 **STATUS: WAIT / HOLD** (Adaptive thresholds active)<br><br>
 **Exact Thresholds Required to Change Signal:**
 * **To Shift Bullish / Re-enter:** 1-Day price must close above **${needed_price}** (20 EMA) **AND** 4-Hr MACD Histogram must exceed **{min_macd_hist}** (currently `{round(hist_4h_val, 2)}`).
-* **Macro Confirmation:** Monitor 1-Day RSI (currently `{round(rsi_1d_val, 1)}`). Look for it to push back above **50.0** to validate daily momentum.
-* **Execution Watch:** Monitor Intraday RSI (currently `{round(rsi_1h_val, 1)}`). Look for a break above **{min_rsi_execution}** to confirm momentum conviction.
 * **Capital Protection:** Active stop level anchored to 4H structural support at **${stop_level}**.
     """
     border_color = "#ffe600"
@@ -197,18 +193,18 @@ st.markdown("---")
 if decision == "EXIT":
     st.markdown(f'<div class="decision-exit">{decision}</div>', unsafe_allow_html=True)
 elif decision == "RE-ENTER":
-    st.markdown(f'<div class="decision-reenter">{decision}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="decision-reenter">{decision}</div>', unsafe_allow_html=True)
 else:
     st.markdown(f'<div class="decision-wait">{decision}</div>', unsafe_allow_html=True)
 
 st.markdown("---")
 
-# Render Clean Multi-Timeframe Breakdown
-st.markdown("### Multi-Timeframe Technical Breakdown")
+# Render Clean Multi-Timeframe Breakdown with Embedded Targets
+st.markdown("### Multi-Timeframe Technical Breakdown & Targets")
 if market_data:
     col_a, col_b, col_c = st.columns(3)
     
-    d1_bullish = market_data['price'] > ema_1d_val
+    d1_bullish = market_data['price'] > ema_1d_val and rsi_1d_val >= 50.0
     d1_trend = "Bullish" if d1_bullish else "Bearish"
     d1_color = "#30d158" if d1_bullish else "#ff2d55"
     
@@ -231,8 +227,8 @@ if market_data:
             <div class="metric-container">
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-DAY (MACRO)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{d1_color}; margin-top:6px;">{d1_trend}</div>
-                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1d_val, 1)}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:2px;">EMA20: ${round(ema_1d_val, 1)}</div>
+                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1d_val, 1)} | EMA: ${round(ema_1d_val, 1)}</div>
+                <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Target: Price > EMA & RSI > 50</div>
             </div>
         """, unsafe_allow_html=True)
         
@@ -242,6 +238,7 @@ if market_data:
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">4-HR (MOMENTUM)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{h4_color}; margin-top:6px;">{h4_trend}</div>
                 <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">MACD Hist: {round(hist_4h_val, 2)}</div>
+                <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Target: Hist > {min_macd_hist}</div>
             </div>
         """, unsafe_allow_html=True)
         
@@ -251,6 +248,7 @@ if market_data:
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">EXECUTION STREAM</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{h1_color}; margin-top:6px;">{h1_trend}</div>
                 <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1h_val, 1)}</div>
+                <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Target: RSI > {min_rsi_execution}</div>
             </div>
         """, unsafe_allow_html=True)
 else:
