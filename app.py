@@ -45,7 +45,7 @@ else:
     min_rsi_execution = 50.0
     profile_label = "📊 **Asset Profile:** Standard Equity / Single Stock Swing Profile"
 
-# Precise Indicator Engine using Wilder's Smoothing (TradingView Standard)
+# Precise Indicator Engine matching TradingView's exact RMA (Wilder's Smoothing) & MACD
 def compute_tradingview_style_indicators(df, window=14):
     if df is None or len(df) < window:
         return 50.0, 0.0, 0.0, 0.0
@@ -56,8 +56,9 @@ def compute_tradingview_style_indicators(df, window=14):
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     
-    avg_gain = gain.ewm(alpha=1/window, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/window, adjust=False).mean()
+    # TradingView uses Wilder's smoothing (RMA), configured with min_periods for precision
+    avg_gain = gain.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
     
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
@@ -123,9 +124,10 @@ else:
     if df_1d is not None and df_4h_data is not None and df_execution_raw is not None and len(df_1d) > 0:
         live_price_val = float(df_execution_raw['Close'].iloc[-1])
         
-        df_exec_indicators = df_execution_raw.iloc[:-1] if len(df_execution_raw) > 1 else df_execution_raw
-        df_1d_indicators = df_1d.iloc[:-1] if len(df_1d) > 1 else df_1d
-        df_4h_indicators = df_4h_data.iloc[:-1] if len(df_4h_data) > 1 else df_4h_data
+        # Strictly drop the last active/unclosed candle to align with closed historical bar feeds on TradingView
+        df_exec_indicators = df_execution_raw.iloc[:-1].copy() if len(df_execution_raw) > 1 else df_execution_raw.copy()
+        df_1d_indicators = df_1d.iloc[:-1].copy() if len(df_1d) > 1 else df_1d.copy()
+        df_4h_indicators = df_4h_data.iloc[:-1].copy() if len(df_4h_data) > 1 else df_4h_data.copy()
 
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d_indicators)
         rsi_exec, _, _, _ = compute_tradingview_style_indicators(df_exec_indicators)
