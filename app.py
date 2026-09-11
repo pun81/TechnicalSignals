@@ -41,12 +41,10 @@ is_leveraged = ticker_input in leveraged_assets
 if is_leveraged:
     min_macd_hist = 0.05
     min_rsi_execution = 55.0
-    default_buffer = 0.10
     profile_label = "⚡ **Asset Profile:** 3x Leveraged ETF (Stricter Filters Active)"
 else:
     min_macd_hist = 0.00
     min_rsi_execution = 50.0
-    default_buffer = 0.05
     profile_label = "📊 **Asset Profile:** Standard Equity / Single Stock Swing Profile"
 
 # Precise Indicator Engine using Wilder's Smoothing (TradingView Standard)
@@ -73,6 +71,20 @@ def compute_tradingview_style_indicators(df, window=14):
     
     return rsi.iloc[-1], ema20.iloc[-1], macd.iloc[-1], histogram.iloc[-1]
 
+# Automated 4H Structural Support Calculation
+def find_structural_support(df_4h, is_leveraged):
+    if df_4h is None or len(df_4h) < 10:
+        return None
+    # Look back 30 bars on 4H chart for swing low support
+    recent_lows = df_4h['Low'].tail(30)
+    raw_support = recent_lows.min()
+    
+    if is_leveraged:
+        # Apply a 1.5% volatility buffer below raw support to avoid high-beta wick-hunting
+        return round(raw_support * 0.985, 2)
+    else:
+        return round(raw_support, 2)
+
 # Fetch data via Twelve Data REST API
 @st.cache_data(ttl=60)
 def fetch_twelve_data(symbol, interval, key):
@@ -93,16 +105,17 @@ def fetch_twelve_data(symbol, interval, key):
 
 # Load Market Data
 market_data = None
+df_4h_data = None
 if api_key:
     df_1d = fetch_twelve_data(ticker_input, "1day", api_key)
-    df_4h = fetch_twelve_data(ticker_input, "4h", api_key)
+    df_4h_data = fetch_twelve_data(ticker_input, "4h", api_key)
     df_1h = fetch_twelve_data(ticker_input, "1h", api_key)
     
-    if df_1d is not None and df_4h is not None and df_1h is not None:
+    if df_1d is not None and df_4h_data is not None and df_1h is not None:
         price = float(df_1d['Close'].iloc[-1])
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d)
         rsi_1h, _, _, _ = compute_tradingview_style_indicators(df_1h)
-        _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h)
+        _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h_data)
         
         market_data = {
             "price": price,
@@ -118,15 +131,18 @@ current_price = market_data["price"] if market_data else 115.76
 with col2:
     price_input = st.number_input("Current Price ($)", value=round(current_price, 2), step=0.01)
 
-default_stop = round(price_input * (1 - default_buffer), 2)
-stop_level = st.number_input("Stop Level ($)", value=default_stop, step=0.01)
+# Dynamically calculate default stop from structural 4H support, with fallback
+calculated_support = find_structural_support(df_4h_data, is_leveraged)
+default_stop = calculated_support if calculated_support else round(price_input * (0.90 if is_leveraged else 0.95), 2)
+
+stop_level = st.number_input("Stop Level (Structural Support)", value=default_stop, step=0.01)
 
 rsi_1h_val = market_data["rsi_1h"] if market_data else 42.5
 rsi_1d_val = market_data["rsi_1d"] if market_data else 45.0
 hist_4h_val = market_data["hist_4h"] if market_data else -0.29
 ema_1d_val = market_data["ema_1d"] if market_data else price_input
 
-# Decision Logic & Dynamic Threshold Rule Building (Asset-Aware)
+# Decision Logic & Dynamic Threshold Rule Building
 decision = "WAIT"
 border_color = "#ffe600"
 is_alert = False
@@ -138,7 +154,7 @@ elif price_input < stop_level:
     is_alert = True
     summary_markdown = f"""
 **CRITICAL EXIT TRIGGER**
-* **Trigger Event:** Current price (${price_input}) breached your stop loss floor (**${stop_level}**).
+* **Trigger Event:** Current price (${price_input}) breached your 4H structural support floor (**${stop_level}**).
 * **Action:** { "Leveraged volatility decay overrides oversold indicators. Execute exit immediately." if is_leveraged else "Support level broken. Protect capital and exit position." }
     """
     border_color = "#ff2d55"
@@ -151,8 +167,8 @@ else:
 **Exact Thresholds Required to Change Signal:**
 * **To Shift Bullish / Re-enter:** 1-Day price must close above **${needed_price}** (20 EMA) **AND** 4-Hr MACD Histogram must exceed **{min_macd_hist}** (currently `{round(hist_4h_val, 2)}`).
 * **Macro Confirmation:** Monitor 1-Day RSI (currently `{round(rsi_1d_val, 1)}`). Look for it to push back above **50.0** to validate daily momentum.
-* **Execution Watch:** Monitor 1-Hr RSI (currently `{round(rsi_1h_val, 1)}`). Look for a break above **{min_rsi_execution}** to confirm momentum conviction (stricter filter for high-beta volatility).
-* **Capital Protection:** Active stop level floor set at **${stop_level}** ({int(default_buffer * 100)}% risk buffer).
+* **Execution Watch:** Monitor 1-Hr RSI (currently `{round(rsi_1h_val, 1)}`). Look for a break above **{min_rsi_execution}** to confirm momentum conviction.
+* **Capital Protection:** Active stop level anchored to 4H structural support at **${stop_level}**.
     """
     border_color = "#ffe600"
 
@@ -171,7 +187,7 @@ else:
 
 st.markdown("---")
 
-# Render Clean Multi-Timeframe Breakdown (Consistent Live Values Only)
+# Render Clean Multi-Timeframe Breakdown
 st.markdown("### Multi-Timeframe Technical Breakdown")
 if market_data:
     col_a, col_b, col_c = st.columns(3)
@@ -181,12 +197,12 @@ if market_data:
     d1_trend = "Bullish" if d1_bullish else "Bearish"
     d1_color = "#30d158" if d1_bullish else "#ff2d55"
     
-    # 4-Hr Trend (Adaptive Threshold Check)
+    # 4-Hr Trend
     h4_bullish = hist_4h_val > min_macd_hist
     h4_trend = "Bullish Conviction" if h4_bullish else ("Transitioning" if hist_4h_val > 0 else "Bearish")
     h4_color = "#30d158" if h4_bullish else ("#ffe600" if hist_4h_val > 0 else "#ff2d55")
     
-    # 1-Hr Trend (Adaptive Threshold Check)
+    # 1-Hr Trend
     if rsi_1h_val < 40:
         h1_trend = "Oversold"
         h1_color = "#ffe600"
