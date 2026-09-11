@@ -144,7 +144,7 @@ else:
 
 **Exact Thresholds Required to Change Signal:**
 * **To Shift Bullish / Re-enter:** 1-Day price must close above **${needed_price}** (20 EMA) **AND** 4-Hr MACD Histogram must cross above **0.00** (currently `{round(hist_4h_val, 2)}`).
-* **Execution Watch:** Monitor 1-Hr RSI (currently `{round(rsi_1h_val, 1)}`). Look for a drop below **40.0** for deep-value entries or a break above **60.0** for momentum confirmation.
+* **Execution Watch:** Monitor 1-Hr RSI (currently `{round(rsi_1h_val, 1)}`). Look for a drop below **40.0** for deep-value entries or a break above **50.0** for early momentum confirmation.
 * **Capital Protection:** Active stop level floor set at **${stop_level}**.
     """
     border_color = "#ffe600"
@@ -164,7 +164,7 @@ else:
 
 st.markdown("---")
 
-# Render Clean Multi-Timeframe Breakdown
+# Render Clean Multi-Timeframe Breakdown (Consistent Live Values Only)
 st.markdown("### Multi-Timeframe Technical Breakdown")
 if market_data:
     col_a, col_b, col_c = st.columns(3)
@@ -176,16 +176,16 @@ if market_data:
     
     # 4-Hr Trend
     h4_bullish = hist_4h_val > 0
-    h4_trend = "Bullish (Hist > 0)" if h4_bullish else "Bearish (Hist < 0)"
+    h4_trend = "Bullish" if h4_bullish else "Bearish"
     h4_color = "#30d158" if h4_bullish else "#ff2d55"
     
-    # 1-Hr Trend
+    # 1-Hr Trend (Adjusted thresholds: <40 oversold, >50 bullish momentum)
     if rsi_1h_val < 40:
         h1_trend = "Oversold"
         h1_color = "#ffe600"
-    elif rsi_1h_val > 60:
-        h1_trend = "Overbought"
-        h1_color = "#00d2ff"
+    elif rsi_1h_val > 50:
+        h1_trend = "Bullish Momentum"
+        h1_color = "#30d158"
     else:
         h1_trend = "Neutral"
         h1_color = "#a0a0b0"
@@ -204,9 +204,8 @@ if market_data:
         st.markdown(f"""
             <div class="metric-container">
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">4-HR (MOMENTUM)</div>
-                <div style="font-size:0.95rem; font-weight:bold; color:{h4_color}; margin-top:6px;">{h4_trend}</div>
-                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">Histogram</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:2px;">Value: {round(hist_4h_val, 2)}</div>
+                <div style="font-size:1.0rem; font-weight:bold; color:{h4_color}; margin-top:6px;">{h4_trend}</div>
+                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">MACD Hist: {round(hist_4h_val, 2)}</div>
             </div>
         """, unsafe_allow_html=True)
         
@@ -215,8 +214,7 @@ if market_data:
             <div class="metric-container">
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-HR (EXECUTION)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{h1_color}; margin-top:6px;">{h1_trend}</div>
-                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI Value</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:2px;">RSI: {round(rsi_1h_val, 1)}</div>
+                <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1h_val, 1)}</div>
             </div>
         """, unsafe_allow_html=True)
 else:
