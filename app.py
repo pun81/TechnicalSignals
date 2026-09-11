@@ -89,19 +89,19 @@ def find_structural_support(df_4h, is_leveraged):
     else:
         return round(raw_support, 2)
 
-# Fetch real-time live price endpoint
+# Fetch real-time live price endpoint with error capture
 @st.cache_data(ttl=30)
 def fetch_live_price(symbol, key):
     url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={key}"
     try:
         response = requests.get(url).json()
         if "price" in response:
-            return float(response["price"])
-        return None
-    except Exception:
-        return None
+            return float(response["price"]), None
+        return None, response.get("message", "Unknown price API error")
+    except Exception as e:
+        return None, str(e)
 
-# Fetch historical time series safely
+# Fetch historical time series with detailed error feedback
 @st.cache_data(ttl=60)
 def fetch_twelve_data(symbol, interval, key, include_eth):
     prepost_param = "true" if include_eth else "false"
@@ -120,21 +120,32 @@ def fetch_twelve_data(symbol, interval, key, include_eth):
             if len(df) > 1:
                 df = df.iloc[:-1]
                 
-            return df
-        return None
-    except Exception:
-        return None
+            return df, None
+        err_msg = response.get("message", f"No values returned for {interval}")
+        return None, err_msg
+    except Exception as e:
+        return None, str(e)
 
-# Load Market Data using the toggle state
+# Load Market Data & Capture Specific Errors
 market_data = None
 df_4h_data = None
 live_price_val = None
+api_error_log = []
 
-if api_key:
-    live_price_val = fetch_live_price(ticker_input, api_key)
-    df_1d = fetch_twelve_data(ticker_input, "1day", api_key, include_after_hours)
-    df_4h_data = fetch_twelve_data(ticker_input, "4h", api_key, include_after_hours)
-    df_1h = fetch_twelve_data(ticker_input, "1h", api_key, include_after_hours)
+if not api_key:
+    api_error_log.append("`TWELVE_DATA_API_KEY` is missing from your Streamlit Secrets.")
+else:
+    live_price_val, err_price = fetch_live_price(ticker_input, api_key)
+    if err_price: api_error_log.append(f"Price API Error: {err_price}")
+
+    df_1d, err_1d = fetch_twelve_data(ticker_input, "1day", api_key, include_after_hours)
+    if err_1d: api_error_log.append(f"1-Day Data Error: {err_1d}")
+
+    df_4h_data, err_4h = fetch_twelve_data(ticker_input, "4h", api_key, include_after_hours)
+    if err_4h: api_error_log.append(f"4-Hour Data Error: {err_4h}")
+
+    df_1h, err_1h = fetch_twelve_data(ticker_input, "1h", api_key, include_after_hours)
+    if err_1h: api_error_log.append(f"1-Hour Data Error: {err_1h}")
     
     if df_1d is not None and df_4h_data is not None and df_1h is not None and len(df_1d) > 0:
         price = live_price_val if live_price_val else float(df_1d['Close'].iloc[-1])
@@ -267,7 +278,9 @@ if market_data:
             </div>
         """, unsafe_allow_html=True)
 else:
-    st.warning("Unable to fetch data streams. Verify your API key configuration.")
+    st.error("Unable to fetch data streams. API Error Logs:")
+    for err in api_error_log:
+        st.code(err)
 
 # Recommendation Box with Clean Markdown Rendering
 st.markdown(f"""
