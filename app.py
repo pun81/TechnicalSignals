@@ -25,6 +25,14 @@ st.markdown("""
 
 st.markdown("<h2>Decision Engine</h2>", unsafe_allow_html=True)
 
+# --- SIDEBAR ENGINE TOGGLE ---
+st.sidebar.markdown("### ⚙️ Engine Configuration")
+engine_choice = st.sidebar.radio(
+    "Indicator Math Engine",
+    ["Fast (Vectorized Pandas)", "Exact (TradingView Loops)"],
+    help="Toggle between high-speed vectorized calculation and 100% exact TradingView loop parity."
+)
+
 # Load API Key automatically from Streamlit Secrets
 api_key = st.secrets.get("TWELVE_DATA_API_KEY", "")
 
@@ -47,61 +55,98 @@ else:
     min_adx = 15.0 
     profile_label = "📊 **Asset Profile:** Standard Equity / Single Stock Swing Profile"
 
-# --- TRADINGVIEW EXACT HELPER FUNCTIONS ---
-def calc_rma(series, length):
-    """TradingView exact Wilder's Smoothing (RMA)"""
-    s = pd.Series(series).copy().dropna()
-    if len(s) < length:
-        return pd.Series(index=series.index, data=np.nan)
-    sma = s.iloc[:length].mean()
-    s.iloc[:length-1] = np.nan
-    s.iloc[length-1] = sma
-    rma = s.ewm(alpha=1/length, adjust=False).mean()
-    return rma.reindex(series.index)
 
-def calc_ema(series, length):
-    """TradingView exact Exponential Moving Average"""
-    s = pd.Series(series).copy().dropna()
-    if len(s) < length:
-        return pd.Series(index=series.index, data=np.nan)
-    sma = s.iloc[:length].mean()
-    s.iloc[:length-1] = np.nan
-    s.iloc[length-1] = sma
-    ema = s.ewm(span=length, adjust=False).mean()
-    return ema.reindex(series.index)
-
-# --- INDICATOR CALCULATIONS ---
-def compute_tradingview_style_indicators(df, window=14):
+# --- ENGINE 1: FAST VECTORIZED METHODS ---
+def compute_vectorized_indicators(df, window=14):
     if df is None or len(df) < 50:
         return 50.0, 0.0, 0.0, 0.0
-        
     close = df['Close']
     delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
     
+    avg_gain = gain.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(100)
+    
+    ema20 = close.ewm(span=20, adjust=False).mean()
+    exp1 = close.ewm(span=12, adjust=False).mean()
+    exp2 = close.ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2
+    signal = macd.ewm(span=9, adjust=False).mean()
+    histogram = macd - signal
+    
+    return rsi.iloc[-1], ema20.iloc[-1], macd.iloc[-1], histogram.iloc[-1]
+
+
+# --- ENGINE 2: EXACT TRADINGVIEW LOOP METHODS ---
+def calc_rma(series, length):
+    s = series.astype(float).copy()
+    res = pd.Series(index=s.index, dtype=float)
+    valid_idx = s.dropna().index
+    if len(valid_idx) < length:
+        return res
+    alpha = 1 / length
+    sma = s.loc[valid_idx[:length]].mean()
+    res.loc[valid_idx[length - 1]] = sma
+    prev_val = sma
+    for idx in valid_idx[length:]:
+        val = s.loc[idx]
+        prev_val = (alpha * val) + (1 - alpha) * prev_val
+        res.loc[idx] = prev_val
+    return res
+
+def calc_exact_ema(s, span):
+    res = pd.Series(index=s.index, dtype=float)
+    valid = s.dropna()
+    if len(valid) < span:
+        return res
+    alpha = 2 / (span + 1)
+    sma = valid.iloc[:span].mean()
+    res.loc[valid.index[span - 1]] = sma
+    prev = sma
+    for idx in valid.index[span:]:
+        prev = (alpha * s.loc[idx]) + ((1 - alpha) * prev)
+        res.loc[idx] = prev
+    return res
+
+def compute_loop_indicators(df, window=14):
+    if df is None or len(df) < 50:
+        return 50.0, 0.0, 0.0, 0.0
+    close = df['Close']
+    delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     
     avg_gain = calc_rma(gain, window)
     avg_loss = calc_rma(loss, window)
-    
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.fillna(100) # Fallback if loss is exactly 0
+    rsi = rsi.fillna(100)
     
-    ema20 = calc_ema(close, 20)
-    
-    exp1 = calc_ema(close, 12)
-    exp2 = calc_ema(close, 26)
+    ema20 = calc_exact_ema(close, 20)
+    exp1 = calc_exact_ema(close, 12)
+    exp2 = calc_exact_ema(close, 26)
     macd_line = exp1 - exp2
-    signal_line = calc_ema(macd_line, 9)
+    signal_line = calc_exact_ema(macd_line, 9)
     histogram = macd_line - signal_line
     
     return rsi.iloc[-1], ema20.iloc[-1], macd_line.iloc[-1], histogram.iloc[-1]
 
+
+# --- UNIFIED WRAPPER ROUTER ---
+def compute_tradingview_style_indicators(df, window=14):
+    if engine_choice == "Exact (TradingView Loops)":
+        return compute_loop_indicators(df, window)
+    else:
+        return compute_vectorized_indicators(df, window)
+
+
 def compute_adx(df, window=14):
     if df is None or len(df) < window * 2:
         return 0.0
-    
     df = df.copy()
     high_diff = df['High'].diff()
     low_diff = -df['Low'].diff()
@@ -117,20 +162,15 @@ def compute_adx(df, window=14):
     plus_dm_rma = calc_rma(pd.Series(plus_dm, index=df.index), window)
     minus_dm_rma = calc_rma(pd.Series(minus_dm, index=df.index), window)
     
-    # Division by Zero Fixes
     tr_rma = tr_rma.replace(0, np.nan)
-    
     plus_di = 100 * (plus_dm_rma / tr_rma)
     minus_di = 100 * (minus_dm_rma / tr_rma)
     
-    di_sum = plus_di + minus_di
-    di_sum = di_sum.replace(0, np.nan) # Protect against NaN propagation
-    
+    di_sum = (plus_di + minus_di).replace(0, np.nan)
     dx = 100 * (abs(plus_di - minus_di) / di_sum)
-    dx = dx.fillna(0) # Fill isolated NaN values before final smoothing
+    dx = dx.fillna(0)
     
     adx = calc_rma(dx, window)
-    
     return adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 0.0
 
 def compute_50_sma(df):
@@ -147,7 +187,6 @@ def find_structural_support(df_4h, is_leveraged):
 
 @st.cache_data(ttl=60)
 def fetch_twelve_data(symbol, interval, key):
-    # Outputsize increased to 800 to ensure deep data warmup for EMAs and RMAs
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=800&apikey={key}"
     try:
         response = requests.get(url).json()
@@ -199,7 +238,6 @@ else:
         }
 
 current_price = market_data["price"] if market_data else 115.76
-
 price_input = st.number_input("Current Price ($)", value=round(current_price, 2), step=0.01)
 
 calculated_support = find_structural_support(df_4h_data, is_leveraged)
@@ -233,7 +271,6 @@ else:
     decision = "WAIT"
     needed_price = round(ema_1d_val, 2)
     
-    # Check if all conditions are met for a RE-ENTER
     if (price_input > needed_price) and (rsi_1d_val >= 50.0) and (hist_4h_val > min_macd_hist) and (adx_4h_val > min_adx) and (rsi_1h_val > min_rsi_execution):
         decision = "RE-ENTER"
         border_color = "#30d158"
