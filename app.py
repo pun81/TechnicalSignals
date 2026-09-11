@@ -1,5 +1,5 @@
 import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
 import numpy as np
 
@@ -24,10 +24,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h2>Decision Engine (Timezone Safe)</h2>", unsafe_allow_html=True)
+st.markdown("<h2>Decision Engine (Threshold-Driven)</h2>", unsafe_allow_html=True)
 
-# Sidebar for fine-tuning calibration sliders
+# Sidebar for API Key (with Secrets fallback) and Calibration
 with st.sidebar:
+    st.markdown("### API Configuration")
+    default_key = st.secrets.get("TWELVE_DATA_API_KEY", "")
+    api_key = st.text_input("Twelve Data API Key", value=default_key, type="password", help="Get a free key at twelvedata.com")
+    
     st.markdown("### Feed Calibration")
     rsi_offset = st.slider("1-Hr RSI Offset", -10.0, 10.0, 0.0, 0.5, 
                            help="Fine-tunes 1H RSI to match TradingView exactly.")
@@ -47,17 +51,14 @@ def compute_tradingview_style_indicators(df, window=14):
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     
-    # Wilder's smoothing alpha = 1 / window
     avg_gain = gain.ewm(alpha=1/window, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/window, adjust=False).mean()
     
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     
-    # 20 EMA
     ema20 = close.ewm(span=20, adjust=False).mean()
     
-    # MACD (12, 26, 9)
     exp1 = close.ewm(span=12, adjust=False).mean()
     exp2 = close.ewm(span=26, adjust=False).mean()
     macd = exp1 - exp2
@@ -66,40 +67,38 @@ def compute_tradingview_style_indicators(df, window=14):
     
     return rsi.iloc[-1], ema20.iloc[-1], macd.iloc[-1], histogram.iloc[-1]
 
-# Fetch data and compute indicators across timeframes safely
+# Fetch data via Twelve Data REST API
 @st.cache_data(ttl=60)
-def get_market_analysis(symbol):
+def fetch_twelve_data(symbol, interval, key):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=100&apikey={key}"
     try:
-        t = yf.Ticker(symbol)
-        
-        # 1-Day Data (Macro)
-        df_1d = t.history(period="100d", interval="1d")
-        if df_1d.empty:
-            return None
+        response = requests.get(url).json()
+        if "values" in response:
+            df = pd.DataFrame(response["values"])
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            df.set_index('datetime', inplace=True)
+            df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
+            df = df.sort_index()
+            df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+            return df
+        return None
+    except Exception:
+        return None
+
+# Load Market Data
+market_data = None
+if api_key:
+    df_1d = fetch_twelve_data(ticker_input, "1day", api_key)
+    df_4h = fetch_twelve_data(ticker_input, "4h", api_key)
+    df_1h = fetch_twelve_data(ticker_input, "1h", api_key)
+    
+    if df_1d is not None and df_4h is not None and df_1h is not None:
         price = float(df_1d['Close'].iloc[-1])
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d)
-        
-        # 1-Hour Data (Execution)
-        df_1h = t.history(period="30d", interval="1h")
-        if df_1h.empty:
-            return None
         rsi_1h, _, _, _ = compute_tradingview_style_indicators(df_1h)
-        
-        # Make timezone-naive before resampling to prevent pandas resampling errors
-        df_1h.index = df_1h.index.tz_localize(None)
-        
-        # Resample 1-hour candles into 4-hour blocks
-        df_4h = df_1h.resample('4H').agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            'Close': 'last',
-            'Volume': 'sum'
-        }).dropna()
-        
         _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h)
         
-        return {
+        market_data = {
             "price": price,
             "rsi_1d": rsi_1d,
             "ema_1d": ema_1d,
@@ -107,10 +106,7 @@ def get_market_analysis(symbol):
             "hist_4h": hist_4h,
             "rsi_1h": rsi_1h
         }
-    except Exception as e:
-        return None
 
-market_data = get_market_analysis(ticker_input)
 current_price = market_data["price"] if market_data else 115.76
 
 with col2:
@@ -125,26 +121,38 @@ stop_level = st.number_input("Stop Level ($)", value=default_stop, step=0.01)
 
 # Apply user calibration offsets
 calibrated_rsi_1h = (market_data["rsi_1h"] + rsi_offset) if market_data else 42.46
-calibrated_hist_4h = (market_data["hist_4h"] + macd_offset) if market_data else -0.29
+base_hist = market_data["hist_4h"] if market_data else -0.29
+calibrated_hist_4h = base_hist + macd_offset
+ema_1d_val = market_data["ema_1d"] if market_data else price_input
 
-# Decision Logic Evaluation
+# Decision Logic & Dynamic Threshold Rule Building
 decision = "WAIT"
 summary_text = ""
 border_color = "#ffe600"
 is_alert = False
 
-if price_input < stop_level:
+if not api_key:
+    summary_text = "Please enter your Twelve Data API key in the sidebar to activate live feeds."
+elif price_input < stop_level:
     decision = "EXIT"
     is_alert = True
-    summary_text = f"CRITICAL EXIT TRIGGER: {ticker_input} has breached your stop level (${stop_level}). Leveraged volatility decay overrides oversold metrics. Execute exit immediately."
+    summary_text = f"<b>CRITICAL EXIT TRIGGER:</b> Current price (${price_input}) has breached your stop level threshold (<b>${stop_level}</b>). Leveraged volatility decay overrides oversold metrics. Execute exit immediately."
     border_color = "#ff2d55"
-elif market_data and market_data["price"] > market_data["ema_1d"] and ticker_input not in leveraged_assets:
+elif market_data and price_input > ema_1d_val and calibrated_hist_4h > 0 and ticker_input not in leveraged_assets:
     decision = "RE-ENTER"
-    summary_text = f"Uptrend confirmed. Price is trading above the 1-Day 20 EMA with positive macro alignment."
+    summary_text = f"<b>RE-ENTER SIGNAL CONFIRMED:</b> Price (${round(price_input, 2)}) is above the 1-Day 20 EMA (${round(ema_1d_val, 2)}) and 4-Hr MACD histogram is positive ({round(calibrated_hist_4h, 2)})."
     border_color = "#30d158"
 else:
     decision = "WAIT"
-    summary_text = f"Macro trend is constrained. 4-Hr MACD histogram is negative ({round(calibrated_hist_4h, 2)}). Monitor <b>1-Hr RSI ({round(calibrated_rsi_1h, 1)})</b> for recovery before shifting stance. Protect capital against stop level (${stop_level})."
+    # Detail exact technical thresholds needed to trigger changes
+    needed_price = round(ema_1d_val, 2)
+    summary_text = f"""
+        <b>STATUS: WAIT / HOLD.</b> Macro constraints are active.<br><br>
+        <u>Explicit Thresholds Required to Change Signal:</u>
+        <br>• <b>To Shift Bullish / Re-enter:</b> 1-Day Price must close above <b>${needed_price}</b> (20 EMA) AND 4-Hr MACD Histogram must cross above <b>0.00</b> (currently {round(calibrated_hist_4h, 2)}).
+        <br>• <b>Execution Timing:</b> Look for 1-Hr RSI (currently {round(calibrated_rsi_1h, 1)}) to drop below <b>40.0</b> for deep-value entry or clear above <b>60.0</b> for momentum confirmation.
+        <br>• <b>Capital Protection:</b> Active stop level floor set at <b>${stop_level}</b>.
+    """
     border_color = "#ffe600"
 
 # Render Alert Banner if Triggered
@@ -162,52 +170,67 @@ else:
 
 st.markdown("---")
 
-# Render Multi-Timeframe Ladder Matching TradingView Formulas
+# Render Multi-Timeframe Breakdown (Trend + Technical Value Combined)
 st.markdown("### Multi-Timeframe Technical Breakdown")
 if market_data:
     col_a, col_b, col_c = st.columns(3)
     
-    d1_trend = "Bullish" if market_data['price'] > market_data['ema_1d'] else "Bearish"
-    d1_color = "#30d158" if market_data['price'] > market_data['ema_1d'] else "#ff2d55"
+    # 1-Day Trend + Values
+    d1_is_bullish = market_data['price'] > ema_1d_val
+    d1_trend = "Bullish" if d1_is_bullish else "Bearish"
+    d1_color = "#30d158" if d1_is_bullish else "#ff2d55"
     
-    h4_trend = "Bullish (MACD > 0)" if calibrated_hist_4h > 0 else "Bearish (MACD < 0)"
-    h4_color = "#30d158" if calibrated_hist_4h > 0 else "#ff2d55"
+    # 4-Hr Trend + Values
+    h4_is_bullish = calibrated_hist_4h > 0
+    h4_trend = "Bullish" if h4_is_bullish else "Bearish"
+    h4_color = "#30d158" if h4_is_bullish else "#ff2d55"
     
-    h1_trend = "Oversold" if calibrated_rsi_1h < 40 else ("Overbought" if calibrated_rsi_1h > 60 else "Neutral")
-    h1_color = "#ffe600" if calibrated_rsi_1h < 40 else "#00d2ff"
+    # 1-Hr Trend + Values
+    if calibrated_rsi_1h < 40:
+        h1_trend = "Oversold"
+        h1_color = "#ffe600"
+    elif calibrated_rsi_1h > 60:
+        h1_trend = "Overbought"
+        h1_color = "#00d2ff"
+    else:
+        h1_trend = "Neutral"
+        h1_color = "#a0a0b0"
 
     with col_a:
         st.markdown(f"""
             <div class="metric-container">
-                <div style="font-size:0.75rem; color:#a0a0b0;">1-DAY (MACRO)</div>
-                <div style="font-size:0.9rem; font-weight:bold; color:{d1_color}; margin-top:5px;">{d1_trend}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">RSI: {round(market_data['rsi_1d'], 1)}</div>
+                <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-DAY (MACRO)</div>
+                <div style="font-size:1.0rem; font-weight:bold; color:{d1_color}; margin-top:4px;">{d1_trend}</div>
+                <div style="font-size:0.75rem; color:#ffffff; margin-top:4px;">Price vs EMA20</div>
+                <div style="font-size:0.7rem; color:#8e8e93;">RSI: {round(market_data['rsi_1d'], 1)}</div>
             </div>
         """, unsafe_allow_html=True)
         
     with col_b:
         st.markdown(f"""
             <div class="metric-container">
-                <div style="font-size:0.75rem; color:#a0a0b0;">4-HR (MOMENTUM)</div>
-                <div style="font-size:0.9rem; font-weight:bold; color:{h4_color}; margin-top:5px;">{h4_trend}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">Hist: {round(calibrated_hist_4h, 2)}</div>
+                <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">4-HR (MOMENTUM)</div>
+                <div style="font-size:1.0rem; font-weight:bold; color:{h4_color}; margin-top:4px;">{h4_trend}</div>
+                <div style="font-size:0.75rem; color:#ffffff; margin-top:4px;">MACD Hist</div>
+                <div style="font-size:0.7rem; color:#8e8e93;">{round(calibrated_hist_4h, 2)}</div>
             </div>
         """, unsafe_allow_html=True)
         
     with col_c:
         st.markdown(f"""
             <div class="metric-container">
-                <div style="font-size:0.75rem; color:#a0a0b0;">1-HR (EXECUTION)</div>
-                <div style="font-size:0.9rem; font-weight:bold; color:{h1_color}; margin-top:5px;">{h1_trend}</div>
-                <div style="font-size:0.7rem; color:#8e8e93; margin-top:3px;">RSI: {round(calibrated_rsi_1h, 1)}</div>
+                <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-HR (EXECUTION)</div>
+                <div style="font-size:1.0rem; font-weight:bold; color:{h1_color}; margin-top:4px;">{h1_trend}</div>
+                <div style="font-size:0.75rem; color:#ffffff; margin-top:4px;">RSI State</div>
+                <div style="font-size:0.7rem; color:#8e8e93;">RSI: {round(calibrated_rsi_1h, 1)}</div>
             </div>
         """, unsafe_allow_html=True)
 else:
-    st.warning("Unable to fetch data streams for this ticker.")
+    st.warning("Please enter your Twelve Data API key in the sidebar to load indicators.")
 
-# Recommendation Box
+# Recommendation Box with Clear Thresholds
 st.markdown(f"""
-    <div style="margin-top: 20px; font-size: 0.85rem; color: #aeaeb2; line-height: 1.5; padding: 15px; background: #16161c; border-radius: 12px; border-left: 4px solid {border_color};">
+    <div style="margin-top: 20px; font-size: 0.85rem; color: #aeaeb2; line-height: 1.6; padding: 15px; background: #16161c; border-radius: 12px; border-left: 4px solid {border_color};">
         {summary_text}
     </div>
 """, unsafe_allow_html=True)
