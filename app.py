@@ -20,6 +20,7 @@ st.markdown("""
     .decision-exit { color: #ff2d55; font-size: 3rem; font-weight: 900; text-align: center; text-shadow: 0 0 20px rgba(255,45,85,0.5); }
     .decision-reenter { color: #30d158; font-size: 3rem; font-weight: 900; text-align: center; text-shadow: 0 0 20px rgba(48,209,88,0.5); }
     .alert-box { background: rgba(255, 45, 85, 0.25); border: 2px solid #ff2d55; color: #ff2d55; padding: 12px; border-radius: 10px; font-weight: bold; text-align: center; margin-bottom: 15px; }
+    .divergence-box { background: rgba(255, 230, 0, 0.12); border: 1px solid #ffe600; color: #ffe600; padding: 10px; border-radius: 10px; font-size: 0.8rem; text-align: center; margin-bottom: 12px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -30,7 +31,16 @@ st.sidebar.markdown("### ⚙️ Engine Configuration")
 engine_choice = st.sidebar.radio(
     "Indicator Math Engine",
     ["Fast (Vectorized Pandas)", "Exact (TradingView Loops)"],
-    help="Toggle between high-speed vectorized calculation and 100% exact TradingView loop parity."
+    index=1,
+    help="Toggle between high-speed vectorized calculation and 100% exact TradingView loop parity. Defaults to Exact so displayed values track TradingView's Pine-Script math as closely as possible."
+)
+
+st.sidebar.markdown("### 🕯️ 4H Signal Basis")
+bar_basis_choice = st.sidebar.radio(
+    "Which 4H bar drives the decision?",
+    ["Confirmed (closed bar only)", "Live (current forming bar)"],
+    index=0,
+    help="Confirmed uses only fully-closed 4H candles — slower but avoids acting on a value that can still change before the candle closes. Live matches what TradingView's Technicals tab shows in real time, including the still-forming candle, but that number can repaint several times before the bar closes."
 )
 
 # Load API Key automatically from Streamlit Secrets
@@ -224,19 +234,32 @@ else:
         
         df_exec_inds = df_execution_raw.iloc[:-1].copy() if len(df_execution_raw) > 1 else df_execution_raw.copy()
         df_1d_inds = df_1d.iloc[:-1].copy() if len(df_1d) > 1 else df_1d.copy()
-        df_4h_inds = df_4h_data.iloc[:-1].copy() if len(df_4h_data) > 1 else df_4h_data.copy()
+
+        # CONFIRMED basis: drop the last (still-forming) 4H bar so the value can't
+        # change again before the candle closes. This is what the decision engine acts on.
+        df_4h_confirmed = df_4h_data.iloc[:-1].copy() if len(df_4h_data) > 1 else df_4h_data.copy()
+        # LIVE basis: include the still-forming bar, same as TradingView's real-time
+        # Technicals tab. Shown for comparison only, not used to gate the decision
+        # unless the user explicitly switches "4H Signal Basis" to Live.
+        df_4h_live = df_4h_data.copy()
 
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d_inds)
         sma_50 = compute_50_sma(df_1d_inds)
         adx_1d = compute_adx(df_1d_inds)
         
         rsi_exec, _, _, _ = compute_tradingview_style_indicators(df_exec_inds)
-        _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h_inds)
-        adx_4h = compute_adx(df_4h_inds)
+
+        _, _, macd_4h_confirmed, hist_4h_confirmed = compute_tradingview_style_indicators(df_4h_confirmed)
+        adx_4h_confirmed = compute_adx(df_4h_confirmed)
+
+        _, _, macd_4h_live, hist_4h_live = compute_tradingview_style_indicators(df_4h_live)
+        adx_4h_live = compute_adx(df_4h_live)
         
         market_data = {
             "price": live_price_val, "rsi_1d": rsi_1d, "ema_1d": ema_1d, "sma_50": sma_50,
-            "adx_1d": adx_1d, "macd_4h": macd_4h, "hist_4h": hist_4h, "adx_4h": adx_4h, "rsi_1h": rsi_exec
+            "adx_1d": adx_1d, "rsi_1h": rsi_exec,
+            "macd_4h_confirmed": macd_4h_confirmed, "hist_4h_confirmed": hist_4h_confirmed, "adx_4h_confirmed": adx_4h_confirmed,
+            "macd_4h_live": macd_4h_live, "hist_4h_live": hist_4h_live, "adx_4h_live": adx_4h_live,
         }
 
 current_price = market_data["price"] if market_data else 115.76
@@ -249,10 +272,28 @@ stop_level = st.number_input("Stop Level (Structural Support)", value=default_st
 rsi_1h_val = market_data["rsi_1h"] if market_data else 42.5
 rsi_1d_val = market_data["rsi_1d"] if market_data else 45.0
 adx_1d_val = market_data["adx_1d"] if market_data else 22.0
-hist_4h_val = market_data["hist_4h"] if market_data else -0.29
 ema_1d_val = market_data["ema_1d"] if market_data else price_input
 sma_50_val = market_data["sma_50"] if market_data else price_input
-adx_4h_val = market_data["adx_4h"] if market_data else 18.0
+
+hist_4h_confirmed_val = market_data["hist_4h_confirmed"] if market_data else -0.29
+macd_4h_confirmed_val = market_data["macd_4h_confirmed"] if market_data else -0.29
+adx_4h_confirmed_val = market_data["adx_4h_confirmed"] if market_data else 18.0
+
+hist_4h_live_val = market_data["hist_4h_live"] if market_data else hist_4h_confirmed_val
+macd_4h_live_val = market_data["macd_4h_live"] if market_data else macd_4h_confirmed_val
+adx_4h_live_val = market_data["adx_4h_live"] if market_data else adx_4h_confirmed_val
+
+# Which 4H reading actually drives the decision, per the sidebar toggle
+if bar_basis_choice == "Live (current forming bar)":
+    hist_4h_val, adx_4h_val = hist_4h_live_val, adx_4h_live_val
+    basis_label = "LIVE (forming candle — matches TradingView real-time)"
+else:
+    hist_4h_val, adx_4h_val = hist_4h_confirmed_val, adx_4h_confirmed_val
+    basis_label = "CONFIRMED (last closed 4H candle only)"
+
+# Flag when live and confirmed disagree on bullish/bearish sign — this is the
+# scenario that produces "the app says bullish, TradingView says bearish" confusion.
+signals_diverge = (hist_4h_confirmed_val > min_macd_hist) != (hist_4h_live_val > min_macd_hist)
 
 # Decision Logic
 decision = "WAIT"
@@ -285,13 +326,21 @@ else:
 *Macro Baseline context: Price is currently in a {macro_status} relative to the 50 SMA (${round(sma_50_val, 2)}).*<br><br>
 **Exact Criteria Required for a RE-ENTER / BUY Signal:**
 * **1-Day Swing Setup:** Price must close above **${needed_price}** (20 EMA) **AND** RSI >= 50.0 (currently `{round(rsi_1d_val, 1)}`).
-* **4-Hour Momentum & Trend:** MACD Hist > **{min_macd_hist}** (currently `{round(hist_4h_val, 2)}`) **AND** ADX > **{min_adx}** (currently `{round(adx_4h_val, 1)}`).
+* **4-Hour Momentum & Trend ({basis_label}):** MACD Hist > **{min_macd_hist}** (currently `{round(hist_4h_val, 2)}`) **AND** ADX > **{min_adx}** (currently `{round(adx_4h_val, 1)}`).
 * **1-Hour Execution Trigger:** Intraday RSI > **{min_rsi_execution}** (currently `{round(rsi_1h_val, 1)}`).
 * **Capital Protection:** Active stop level anchored to 4H support at **${stop_level}**.
     """
 
 if is_alert:
     st.markdown(f'<div class="alert-box">⚠ RISK OVERRIDE: Price breached support threshold (${stop_level}).</div>', unsafe_allow_html=True)
+
+if signals_diverge and not is_alert:
+    st.markdown(
+        f'<div class="divergence-box">⚠ The live (forming) 4H MACD Hist ({round(hist_4h_live_val, 2)}) and the last confirmed/closed 4H MACD Hist ({round(hist_4h_confirmed_val, 2)}) disagree on direction. '
+        f'This is normal mid-candle and is why the app and TradingView\'s real-time technicals can flash different colors until the current 4H candle closes. '
+        f'The decision below uses the <b>{basis_label}</b> reading.</div>',
+        unsafe_allow_html=True
+    )
 
 st.markdown("---")
 if decision == "EXIT":
@@ -342,8 +391,9 @@ if market_data:
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">4-HR (MOMENTUM & TREND)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{h4_color}; margin-top:6px;">{h4_trend}</div>
                 <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">MACD Hist: {round(hist_4h_val, 2)} | ADX: {round(adx_4h_val, 1)}</div>
-                <div style="font-size:0.75rem; color:#8e8e93; margin-top:2px;">(ADX < 20 indicates high decay chop)</div>
-                <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Target: Hist > {min_macd_hist} & ADX > {min_adx}</div>
+                <div style="font-size:0.7rem; color:#ffffff; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Confirmed (closed bar): Hist {round(hist_4h_confirmed_val, 2)} / MACD {round(macd_4h_confirmed_val, 2)}</div>
+                <div style="font-size:0.7rem; color:#ffffff; margin-top:2px;">Live (forming bar): Hist {round(hist_4h_live_val, 2)} / MACD {round(macd_4h_live_val, 2)}</div>
+                <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Decision uses: {basis_label} | Target: Hist > {min_macd_hist} & ADX > {min_adx}</div>
             </div>
         """, unsafe_allow_html=True)
         
