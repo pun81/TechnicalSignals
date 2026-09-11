@@ -75,17 +75,27 @@ def compute_tradingview_style_indicators(df, window=14):
 def find_structural_support(df_4h, is_leveraged):
     if df_4h is None or len(df_4h) < 10:
         return None
-    # Look back 30 bars on 4H chart for swing low support
     recent_lows = df_4h['Low'].tail(30)
     raw_support = recent_lows.min()
     
     if is_leveraged:
-        # Apply a 1.5% volatility buffer below raw support to avoid high-beta wick-hunting
         return round(raw_support * 0.985, 2)
     else:
         return round(raw_support, 2)
 
-# Fetch data via Twelve Data REST API
+# Fetch real-time live price endpoint for execution comparison
+@st.cache_data(ttl=30)
+def fetch_live_price(symbol, key):
+    url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={key}"
+    try:
+        response = requests.get(url).json()
+        if "price" in response:
+            return float(response["price"])
+        return None
+    except Exception:
+        return None
+
+# Fetch historical time series data & drop live unclosed candle to match TradingView history
 @st.cache_data(ttl=60)
 def fetch_twelve_data(symbol, interval, key):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=100&apikey={key}"
@@ -98,6 +108,11 @@ def fetch_twelve_data(symbol, interval, key):
             df = df.astype({'open': float, 'high': float, 'low': float, 'close': float, 'volume': float})
             df = df.sort_index()
             df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+            
+            # Drop the live/unclosed candle to ensure complete-bar alignment with TradingView
+            if len(df) > 1:
+                df = df.iloc[:-1]
+                
             return df
         return None
     except Exception:
@@ -106,13 +121,18 @@ def fetch_twelve_data(symbol, interval, key):
 # Load Market Data
 market_data = None
 df_4h_data = None
+live_price_val = None
+
 if api_key:
+    live_price_val = fetch_live_price(ticker_input, api_key)
     df_1d = fetch_twelve_data(ticker_input, "1day", api_key)
     df_4h_data = fetch_twelve_data(ticker_input, "4h", api_key)
     df_1h = fetch_twelve_data(ticker_input, "1h", api_key)
     
     if df_1d is not None and df_4h_data is not None and df_1h is not None:
-        price = float(df_1d['Close'].iloc[-1])
+        # Use live price for display/monitoring, while indicators use clean completed-bar history
+        price = live_price_val if live_price_val else float(df_1d['Close'].iloc[-1])
+        
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d)
         rsi_1h, _, _, _ = compute_tradingview_style_indicators(df_1h)
         _, _, macd_4h, hist_4h = compute_tradingview_style_indicators(df_4h_data)
