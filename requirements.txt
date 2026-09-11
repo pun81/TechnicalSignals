@@ -1,0 +1,5 @@
+streamlit
+yfinance
+tradingview-ta
+pandas
+requests
