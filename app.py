@@ -386,13 +386,23 @@ if market_data:
         """, unsafe_allow_html=True)
         
     with col_b:
+        confirmed_active = (bar_basis_choice != "Live (current forming bar)")
+        live_active = not confirmed_active
+
+        confirmed_style = "color:#30d158; font-weight:800;" if confirmed_active else "color:#5a5a66; font-weight:400;"
+        live_style = "color:#30d158; font-weight:800;" if live_active else "color:#5a5a66; font-weight:400;"
+        confirmed_tag = " ◀ ACTIVE" if confirmed_active else ""
+        live_tag = " ◀ ACTIVE" if live_active else ""
+        confirmed_bg = "background:rgba(48,209,88,0.10); border-radius:6px;" if confirmed_active else ""
+        live_bg = "background:rgba(48,209,88,0.10); border-radius:6px;" if live_active else ""
+
         st.markdown(f"""
             <div class="metric-container">
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">4-HR (MOMENTUM & TREND)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{h4_color}; margin-top:6px;">{h4_trend}</div>
                 <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">MACD Hist: {round(hist_4h_val, 2)} | ADX: {round(adx_4h_val, 1)}</div>
-                <div style="font-size:0.7rem; color:#ffffff; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Confirmed (closed bar): Hist {round(hist_4h_confirmed_val, 2)} / MACD {round(macd_4h_confirmed_val, 2)}</div>
-                <div style="font-size:0.7rem; color:#ffffff; margin-top:2px;">Live (forming bar): Hist {round(hist_4h_live_val, 2)} / MACD {round(macd_4h_live_val, 2)}</div>
+                <div style="font-size:0.7rem; {confirmed_style} {confirmed_bg} margin-top:6px; border-top:1px solid #333342; padding-top:4px; padding-bottom:2px;">Confirmed (closed bar): Hist {round(hist_4h_confirmed_val, 2)} / MACD {round(macd_4h_confirmed_val, 2)}{confirmed_tag}</div>
+                <div style="font-size:0.7rem; {live_style} {live_bg} margin-top:2px; padding-bottom:2px;">Live (forming bar): Hist {round(hist_4h_live_val, 2)} / MACD {round(macd_4h_live_val, 2)}{live_tag}</div>
                 <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Decision uses: {basis_label} | Target: Hist > {min_macd_hist} & ADX > {min_adx}</div>
             </div>
         """, unsafe_allow_html=True)
@@ -415,5 +425,16 @@ else:
 st.markdown(f"""
     <div style="margin-top: 20px; font-size: 0.85rem; color: #aeaeb2; line-height: 1.6; padding: 15px; background: #16161c; border-radius: 12px; border-left: 4px solid {border_color};">
         {summary_markdown}
+    </div>
+""", unsafe_allow_html=True)
+
+# --- PLAIN-LANGUAGE INDICATOR CHEAT SHEET ---
+st.markdown("""
+    <div style="margin-top: 14px; font-size: 0.78rem; color: #aeaeb2; line-height: 1.7; padding: 14px 15px; background: #16161c; border-radius: 12px; border-left: 4px solid #333342;">
+        <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px; margin-bottom:6px;">QUICK INDICATOR CHEAT SHEET</div>
+        <b style="color:#ffffff;">RSI</b> — is price up or down more than usual lately? High = recent gains dominating (strong/overbought). Low = recent losses dominating (weak/oversold).<br>
+        <b style="color:#ffffff;">MACD line</b> — is the short-term average price above or below the long-term average? Positive = bullish trend. Negative = bearish trend.<br>
+        <b style="color:#ffffff;">Hist</b> (MACD Histogram) — is momentum speeding up or slowing down versus its own recent pace? Positive = accelerating/improving. Negative = decelerating/fading. <i>Not</i> the same as trend direction — a negative MACD line with a positive Hist means "still bearish overall, but getting less bearish."<br>
+        <b style="color:#ffffff;">ADX</b> — how strong or powerful is the current trend, regardless of direction? High = real conviction move. Low = weak/choppy, no clear trend to trust yet.
     </div>
 """, unsafe_allow_html=True)
