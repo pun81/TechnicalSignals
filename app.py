@@ -33,6 +33,9 @@ col1, col2 = st.columns(2)
 with col1:
     ticker_input = st.text_input("Ticker", value="SOXL").upper().strip()
 
+with col2:
+    include_after_hours = st.checkbox("Include After-Hours (ETH)", value=False, help="Check to include pre-market and after-hours ticks in indicator calculations.")
+
 # Asset Class Profile Definition
 leveraged_assets = ['SOXL', 'TECL', 'TQQQ', 'UPRO', 'FAS']
 is_leveraged = ticker_input in leveraged_assets
@@ -83,7 +86,7 @@ def find_structural_support(df_4h, is_leveraged):
     else:
         return round(raw_support, 2)
 
-# Fetch real-time live price endpoint for execution comparison
+# Fetch real-time live price endpoint
 @st.cache_data(ttl=30)
 def fetch_live_price(symbol, key):
     url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={key}"
@@ -95,10 +98,11 @@ def fetch_live_price(symbol, key):
     except Exception:
         return None
 
-# Fetch historical time series data & drop live unclosed candle to match TradingView history
+# Fetch historical time series with dynamic RTH/ETH filtering
 @st.cache_data(ttl=60)
-def fetch_twelve_data(symbol, interval, key):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=100&apikey={key}"
+def fetch_twelve_data(symbol, interval, key, include_eth):
+    prepost_param = "true" if include_eth else "false"
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=150&prepost={prepost_param}&apikey={key}"
     try:
         response = requests.get(url).json()
         if "values" in response:
@@ -109,7 +113,11 @@ def fetch_twelve_data(symbol, interval, key):
             df = df.sort_index()
             df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
             
-            # Drop the live/unclosed candle to ensure complete-bar alignment with TradingView
+            # Filter strictly to RTH if after-hours is toggled off
+            if not include_eth:
+                df = df.between_time('09:30:00', '16:00:00')
+            
+            # Drop the live/unclosed candle to ensure complete-bar alignment with TradingView history
             if len(df) > 1:
                 df = df.iloc[:-1]
                 
@@ -118,19 +126,18 @@ def fetch_twelve_data(symbol, interval, key):
     except Exception:
         return None
 
-# Load Market Data
+# Load Market Data using the toggle state
 market_data = None
 df_4h_data = None
 live_price_val = None
 
 if api_key:
     live_price_val = fetch_live_price(ticker_input, api_key)
-    df_1d = fetch_twelve_data(ticker_input, "1day", api_key)
-    df_4h_data = fetch_twelve_data(ticker_input, "4h", api_key)
-    df_1h = fetch_twelve_data(ticker_input, "1h", api_key)
+    df_1d = fetch_twelve_data(ticker_input, "1day", api_key, include_after_hours)
+    df_4h_data = fetch_twelve_data(ticker_input, "4h", api_key, include_after_hours)
+    df_1h = fetch_twelve_data(ticker_input, "1h", api_key, include_after_hours)
     
     if df_1d is not None and df_4h_data is not None and df_1h is not None:
-        # Use live price for display/monitoring, while indicators use clean completed-bar history
         price = live_price_val if live_price_val else float(df_1d['Close'].iloc[-1])
         
         rsi_1d, ema_1d, _, _ = compute_tradingview_style_indicators(df_1d)
@@ -148,8 +155,8 @@ if api_key:
 
 current_price = market_data["price"] if market_data else 115.76
 
-with col2:
-    price_input = st.number_input("Current Price ($)", value=round(current_price, 2), step=0.01)
+# Price Input Field
+price_input = st.number_input("Current Price ($)", value=round(current_price, 2), step=0.01)
 
 # Dynamically calculate default stop from structural 4H support, with fallback
 calculated_support = find_structural_support(df_4h_data, is_leveraged)
