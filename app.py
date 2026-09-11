@@ -118,7 +118,7 @@ else:
 
     if err_1d: api_error_log.append(f"1-Day Data Error: {err_1d}")
     if err_4h: api_error_log.append(f"4-Hour Data Error: {err_4h}")
-    if err_exec: api_error_log.append(f"Execution Stream Data Error: {err_exec}")
+        if err_exec: api_error_log.append(f"Execution Stream Data Error: {err_exec}")
     
     if df_1d is not None and df_4h_data is not None and df_execution_raw is not None and len(df_1d) > 0:
         live_price_val = float(df_execution_raw['Close'].iloc[-1])
@@ -177,9 +177,11 @@ else:
     needed_price = round(ema_1d_val, 2)
     summary_markdown = f"""
 {profile_label}<br><br>
-**STATUS: WAIT / HOLD** (Adaptive thresholds active)<br><br>
-**Exact Thresholds Required to Change Signal:**
-* **To Shift Bullish / Re-enter:** 1-Day price must close above **${needed_price}** (20 EMA) **AND** 4-Hr MACD Histogram must exceed **{min_macd_hist}** (currently `{round(hist_4h_val, 2)}`).
+**STATUS: WAIT / HOLD** (Full 3-Tier Checklist Active)<br><br>
+**Exact Criteria Required for a RE-ENTER / BUY Signal:**
+* **1-Day Macro Setup:** 1-Day price must close above **${needed_price}** (20 EMA) **AND** RSI must be >= 50.0 (currently `{round(rsi_1d_val, 1)}`).
+* **4-Hour Momentum Filter:** MACD Histogram must exceed **{min_macd_hist}** (currently `{round(hist_4h_val, 2)}`).
+* **1-Hour Execution Trigger:** Intraday RSI must break above **{min_rsi_execution}** (currently `{round(rsi_1h_val, 1)}`).
 * **Capital Protection:** Active stop level anchored to 4H structural support at **${stop_level}**.
     """
     border_color = "#ffe600"
@@ -193,7 +195,7 @@ st.markdown("---")
 if decision == "EXIT":
     st.markdown(f'<div class="decision-exit">{decision}</div>', unsafe_allow_html=True)
 elif decision == "RE-ENTER":
-        st.markdown(f'<div class="decision-reenter">{decision}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="decision-reenter">{decision}</div>', unsafe_allow_html=True)
 else:
     st.markdown(f'<div class="decision-wait">{decision}</div>', unsafe_allow_html=True)
 
@@ -228,7 +230,7 @@ if market_data:
                 <div style="font-size:0.7rem; color:#a0a0b0; letter-spacing:1px;">1-DAY (MACRO)</div>
                 <div style="font-size:1.0rem; font-weight:bold; color:{d1_color}; margin-top:6px;">{d1_trend}</div>
                 <div style="font-size:0.75rem; color:#ffffff; margin-top:6px;">RSI: {round(rsi_1d_val, 1)} | EMA: ${round(ema_1d_val, 1)}</div>
-                <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Target: Price > EMA & RSI > 50</div>
+                <div style="font-size:0.65rem; color:#8e8e93; margin-top:6px; border-top:1px solid #333342; padding-top:4px;">Target: Price > EMA & RSI >= 50</div>
             </div>
         """, unsafe_allow_html=True)
         
